@@ -61,8 +61,11 @@ hook's diagnostic log at `%TEMP%\wmltahook.log`.
 The hook also dark-styles mstsc's own UI — the connection dialog, the options
 tabs, cert/warning prompts, window frames and common controls — via
 [umbra](https://github.com/martona/WM_UMBRA) ([src/darkmode.cpp](src/darkmode.cpp)),
-applied through the **same `WH_CBT` hook** (no second hook needed): frames on
-`HCBT_CREATEWND`, dialogs + controls on `HCBT_ACTIVATE`. It's on by default; set
+driven by the controller's `WH_CBT` hook (frames on `HCBT_CREATEWND`, dialogs +
+controls on `HCBT_ACTIVATE`), which in turn installs a thread-local
+`WH_CALLWNDPROCRET` to catch `WM_INITDIALOG` *after* the dialog processes it — so
+dialogs/property-sheet pages that build their controls late (the expanded Show
+Options tabs) get fully themed rather than half-styled. It's on by default; set
 `WMLTA_NODARK=1` in mstsc's environment to disable it. umbra is pulled in by vcpkg
 from the WM_UMBRA **git registry** declared in `src/vcpkg.json`'s
 `vcpkg-configuration` — no extra setup, manifest mode resolves it on configure

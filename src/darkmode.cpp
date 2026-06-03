@@ -52,6 +52,20 @@ namespace
         return true;
     }
 
+    // Our own module handle (for the thread-local message hook below). Magic
+    // static -> initialized once, thread-safe.
+    HMODULE SelfModule() noexcept
+    {
+        static HMODULE mod = []() noexcept {
+            HMODULE m = nullptr;
+            ::GetModuleHandleExW(
+                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                reinterpret_cast<LPCWSTR>(&SelfModule), &m);
+            return m;
+        }();
+        return mod;
+    }
+
     BOOL CALLBACK InitDarkModeOnce(PINIT_ONCE, PVOID, PVOID*) noexcept
     {
         umbra::initDarkMode();
@@ -481,6 +495,45 @@ namespace
                            ? RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_FRAME | RDW_UPDATENOW
                            : RDW_INVALIDATE | RDW_ERASE | RDW_FRAME);
     }
+
+    // ====================================================================
+    // WH_CALLWNDPROCRET: theme dialogs AFTER they process WM_INITDIALOG
+    // ====================================================================
+    // CBT (HCBT_ACTIVATE) themes a dialog's frame and whatever controls exist by
+    // then, but dialogs / property-sheet pages that build their contents *during*
+    // WM_INITDIALOG (mstsc's expanded "Show Options" tabs) come out half-themed.
+    // WH_CALLWNDPROCRET fires AFTER the window proc handles a message, so at
+    // WM_INITDIALOG the controls created in the handler already exist -> one
+    // ApplyDarkModeToDialog (RefreshControls + subclass) catches them all.
+    // (WH_GETMESSAGE would miss it: WM_INITDIALOG is SENT, not posted.)
+    LRESULT CALLBACK CwpRetProc(int code, WPARAM wParam, LPARAM lParam) noexcept
+    {
+        if (code >= 0 && g_darkEnabled && lParam != 0)
+        {
+            const CWPRETSTRUCT* p = reinterpret_cast<const CWPRETSTRUCT*>(lParam);
+            if (p->message == WM_INITDIALOG)
+                ApplyDarkModeToDialog(p->hwnd);
+        }
+        return ::CallNextHookEx(nullptr, code, wParam, lParam);
+    }
+
+    // Installed lazily from the CBT hook, once per GUI thread we see activity on,
+    // targeting just that thread -- no extra global injection, the DLL is already
+    // in-process. Pins the DLL so CwpRetProc stays valid for the thread's life;
+    // the OS drops the thread hook when the thread / process exits.
+    thread_local bool t_msgHookInstalled = false;
+
+    void EnsureMessageHookOnThisThread() noexcept
+    {
+        if (t_msgHookInstalled)
+            return;
+        t_msgHookInstalled = true;          // one attempt per thread, success or not
+        if (!PinHookModule())
+            return;
+        const HMODULE self = SelfModule();
+        if (self != nullptr)
+            ::SetWindowsHookExW(WH_CALLWNDPROCRET, CwpRetProc, self, ::GetCurrentThreadId());
+    }
 }
 
 // ========================================================================
@@ -499,6 +552,7 @@ namespace wmlta
     {
         if (!g_darkEnabled || hwnd == nullptr)
             return;
+        EnsureMessageHookOnThisThread();   // arm the WM_INITDIALOG (CWPRETPROC) catch on this thread
         switch (code)
         {
         case HCBT_CREATEWND:
