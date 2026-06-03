@@ -13,7 +13,7 @@ if (NOT DEFINED VCPKG_MANIFEST_DIR AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/v
     set(VCPKG_MANIFEST_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src" CACHE PATH "vcpkg manifest directory")
 endif()
 
-project(wmlta LANGUAGES CXX)
+project(mstsfence LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -21,30 +21,30 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # ---------------------------------------------------------------------------
 # Version (W.X.Y.Z)
 #
-# Passed as -DWMLTA_VERSION=... by scripts/build_windows.ps1; defaults so a
+# Passed as -DMSTSFENCE_VERSION=... by scripts/build_windows.ps1; defaults so a
 # plain `cmake ...` invocation still configures without a version flag.
 # ---------------------------------------------------------------------------
-if (NOT DEFINED WMLTA_VERSION OR WMLTA_VERSION STREQUAL "")
-    set(WMLTA_VERSION "0.1.0.0")
+if (NOT DEFINED MSTSFENCE_VERSION OR MSTSFENCE_VERSION STREQUAL "")
+    set(MSTSFENCE_VERSION "0.1.0.0")
 endif()
 
-string(REPLACE "." ";" _wmlta_version_parts "${WMLTA_VERSION}")
-list(LENGTH _wmlta_version_parts _wmlta_version_count)
-if (NOT _wmlta_version_count EQUAL 4)
+string(REPLACE "." ";" _mstsfence_version_parts "${MSTSFENCE_VERSION}")
+list(LENGTH _mstsfence_version_parts _mstsfence_version_count)
+if (NOT _mstsfence_version_count EQUAL 4)
     message(FATAL_ERROR
-        "WMLTA_VERSION must be W.X.Y.Z (4 dot-separated integers); got '${WMLTA_VERSION}'")
+        "MSTSFENCE_VERSION must be W.X.Y.Z (4 dot-separated integers); got '${MSTSFENCE_VERSION}'")
 endif()
-foreach (_part IN LISTS _wmlta_version_parts)
+foreach (_part IN LISTS _mstsfence_version_parts)
     if (NOT _part MATCHES "^[0-9]+$")
         message(FATAL_ERROR
-            "WMLTA_VERSION components must be non-negative integers; got '${_part}'")
+            "MSTSFENCE_VERSION components must be non-negative integers; got '${_part}'")
     endif()
 endforeach()
-list(GET _wmlta_version_parts 0 WMLTA_VERSION_MAJOR)
-list(GET _wmlta_version_parts 1 WMLTA_VERSION_MINOR)
-list(GET _wmlta_version_parts 2 WMLTA_VERSION_PATCH)
-list(GET _wmlta_version_parts 3 WMLTA_VERSION_BUILD)
-message(STATUS "wmlta version: ${WMLTA_VERSION}")
+list(GET _mstsfence_version_parts 0 MSTSFENCE_VERSION_MAJOR)
+list(GET _mstsfence_version_parts 1 MSTSFENCE_VERSION_MINOR)
+list(GET _mstsfence_version_parts 2 MSTSFENCE_VERSION_PATCH)
+list(GET _mstsfence_version_parts 3 MSTSFENCE_VERSION_BUILD)
+message(STATUS "mstsfence version: ${MSTSFENCE_VERSION}")
 
 configure_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/src/version.h.in"
@@ -136,59 +136,64 @@ endif()
 find_package(umbra CONFIG REQUIRED)
 
 # ---------------------------------------------------------------------------
-# Version resources (VERSIONINFO), templated per target.
+# Version resources (VERSIONINFO) + app icon, templated per target.
 # ---------------------------------------------------------------------------
+# Absolute path to the app icon, with backslashes doubled for the .rc. The
+# generated .rc lives under build/generated/, so a relative path wouldn't resolve.
+file(TO_NATIVE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/resources/fence-icon.ico" _mstsfence_icon_native)
+string(REPLACE "\\" "\\\\" MSTSFENCE_ICON_PATH "${_mstsfence_icon_native}")
+
 configure_file(
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/wmlta.rc.in"
-    "${CMAKE_CURRENT_BINARY_DIR}/generated/wmlta.rc" @ONLY)
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/mstsfence.rc.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/mstsfence.rc" @ONLY)
 configure_file(
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/wmltahook.rc.in"
-    "${CMAKE_CURRENT_BINARY_DIR}/generated/wmltahook.rc" @ONLY)
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/mstsfencehook.rc.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/mstsfencehook.rc" @ONLY)
 
 # ---------------------------------------------------------------------------
-# wmltahook.dll -- the injected hook. The OS maps it into GUI processes via the
+# mstsfencehook.dll -- the injected hook. The OS maps it into GUI processes via the
 # controller's global WH_CBT hook; it only does anything inside mstsc.exe.
 # ---------------------------------------------------------------------------
-add_library(wmltahook SHARED
+add_library(mstsfencehook SHARED
     "src/hook.cpp"
     "src/darkmode.cpp"
-    "${CMAKE_CURRENT_BINARY_DIR}/generated/wmltahook.rc"
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/mstsfencehook.rc"
 )
-target_include_directories(wmltahook PRIVATE
+target_include_directories(mstsfencehook PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
     "${CMAKE_CURRENT_BINARY_DIR}/generated")
-target_compile_definitions(wmltahook PRIVATE
+target_compile_definitions(mstsfencehook PRIVATE
     WIN32 UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX
     _WIN32_WINNT=0x0A00 NTDDI_VERSION=0x0A000000)   # Win10+ for umbra's dark-mode APIs
-target_link_libraries(wmltahook PRIVATE
+target_link_libraries(mstsfencehook PRIVATE
     detours_imported umbra::umbra user32 uxtheme dwmapi gdi32 comctl32)
 if (MSVC)
-    target_compile_options(wmltahook PRIVATE /utf-8 /W4)
+    target_compile_options(mstsfencehook PRIVATE /utf-8 /W4)
 endif()
 
 # ---------------------------------------------------------------------------
-# wmlta.exe -- the controller: a tray app that installs the global WH_CBT hook,
+# mstsfence.exe -- the controller: a tray app that installs the global WH_CBT hook,
 # survives Explorer restarts, and registers itself to run at login. `--diag` /
 # `--help` attach a console. GUI subsystem; wWinMain entry point.
 # ---------------------------------------------------------------------------
-add_executable(wmlta WIN32
+add_executable(mstsfence WIN32
     "src/main.cpp"
-    "${CMAKE_CURRENT_BINARY_DIR}/generated/wmlta.rc"
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/mstsfence.rc"
     # CMake auto-recognizes .manifest sources and embeds them via mt.exe.
-    "src/wmlta.exe.manifest"
+    "src/mstsfence.exe.manifest"
 )
-target_include_directories(wmlta PRIVATE
+target_include_directories(mstsfence PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
     "${CMAKE_CURRENT_BINARY_DIR}/generated")
-target_compile_definitions(wmlta PRIVATE
+target_compile_definitions(mstsfence PRIVATE
     WIN32 UNICODE _UNICODE _WINDOWS WIN32_LEAN_AND_MEAN NOMINMAX)
-target_link_libraries(wmlta PRIVATE user32 shell32 advapi32)
+target_link_libraries(mstsfence PRIVATE user32 shell32 advapi32)
 if (MSVC)
-    target_compile_options(wmlta PRIVATE /utf-8 /W4)
-    target_link_options(wmlta PRIVATE "/ENTRY:wWinMainCRTStartup")
+    target_compile_options(mstsfence PRIVATE /utf-8 /W4)
+    target_link_options(mstsfence PRIVATE "/ENTRY:wWinMainCRTStartup")
 endif()
 
-# The controller loads wmltahook.dll from its own directory at runtime; with the
+# The controller loads mstsfencehook.dll from its own directory at runtime; with the
 # default single-config (Ninja) output dir both land side by side. Order the
 # build so the DLL is present next to the exe.
-add_dependencies(wmlta wmltahook)
+add_dependencies(mstsfence mstsfencehook)

@@ -1,6 +1,6 @@
-// WM_LEAVEMYTASKBARALONE -- the controller (tray app).
+// mstsfence -- the controller (tray app).
 //
-// Installs a global WH_CBT hook whose DLL (wmltahook.dll) the OS maps into GUI
+// Installs a global WH_CBT hook whose DLL (mstsfencehook.dll) the OS maps into GUI
 // processes as they run. The DLL is inert except in mstsc.exe, where it clamps
 // the screen-size APIs to the monitor work area so mstsc's full-screen window and
 // session resolution leave the host taskbar visible, at native 1:1.
@@ -14,12 +14,12 @@
 //   * registers itself to run at login when it starts
 //   * the tray "Exit" item unregisters autostart; WM_CLOSE / logoff do not
 //
-//   wmlta            run in the tray (default)
-//   wmlta --diag     dump each monitor's rcMonitor vs rcWork, then exit
-//   wmlta --help     usage
+//   mstsfence            run in the tray (default)
+//   mstsfence --diag     dump each monitor's rcMonitor vs rcWork, then exit
+//   mstsfence --help     usage
 //
-// Set WMLTA_TRACE=1 in mstsc's environment to get the DLL's diagnostic log back
-// (%TEMP%\wmltahook.log); it is silent otherwise.
+// Set MSTSFENCE_TRACE=1 in mstsc's environment to get the DLL's diagnostic log back
+// (%TEMP%\mstsfencehook.log); it is silent otherwise.
 
 #include <windows.h>
 
@@ -30,11 +30,12 @@
 #include <cwchar>
 
 #include "version.h"
+#include "resource.h"
 
 // ---------------------------------------------------------------------------
 // shared helpers
 // ---------------------------------------------------------------------------
-// Full path to wmltahook.dll next to this exe (independent of the CWD).
+// Full path to mstsfencehook.dll next to this exe (independent of the CWD).
 static bool HookDllPath(wchar_t* out, size_t cap)
 {
     wchar_t exe[MAX_PATH];
@@ -49,7 +50,7 @@ static bool HookDllPath(wchar_t* out, size_t cap)
         return false;
     }
     *(slash + 1) = L'\0';  // keep trailing backslash
-    return wcscpy_s(out, cap, exe) == 0 && wcscat_s(out, cap, L"wmltahook.dll") == 0;
+    return wcscpy_s(out, cap, exe) == 0 && wcscat_s(out, cap, L"mstsfencehook.dll") == 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -117,14 +118,14 @@ static int RunDiag()
 
 static int RunHelp()
 {
-    wprintf(L"WM_LEAVEMYTASKBARALONE v%hs\n", WMLTA_VERSION_STRING);
+    wprintf(L"mstsfence v%hs\n", MSTSFENCE_VERSION_STRING);
     wprintf(L"Keep mstsc's full-screen window (and session resolution) within the\n"
             L"monitor work area so the host taskbar stays visible.\n\n");
     wprintf(L"Usage:\n");
-    wprintf(L"  wmlta            run in the tray; install the global hook; register at login\n");
-    wprintf(L"  wmlta --diag     print each monitor's rcMonitor vs rcWork and exit\n");
-    wprintf(L"  wmlta --help     this help\n\n");
-    wprintf(L"Set WMLTA_TRACE=1 (in mstsc's environment) for the hook's diagnostic log.\n");
+    wprintf(L"  mstsfence            run in the tray; install the global hook; register at login\n");
+    wprintf(L"  mstsfence --diag     print each monitor's rcMonitor vs rcWork and exit\n");
+    wprintf(L"  mstsfence --help     this help\n\n");
+    wprintf(L"Set MSTSFENCE_TRACE=1 (in mstsc's environment) for the hook's diagnostic log.\n");
     return 0;
 }
 
@@ -140,7 +141,7 @@ enum
 static const UINT TRAY_UID = 1;
 
 static const wchar_t* RUN_KEY = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
-static const wchar_t* RUN_VALUE = L"WM_LEAVEMYTASKBARALONE";
+static const wchar_t* RUN_VALUE = L"mstsfence";
 
 static HHOOK g_hook = nullptr;
 static HMODULE g_dll = nullptr;
@@ -188,8 +189,13 @@ static void AddTrayIcon(HWND hwnd)
     nid.uID = TRAY_UID;
     nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     nid.uCallbackMessage = WM_TRAY;
-    nid.hIcon = LoadIconW(nullptr, IDI_APPLICATION);  // placeholder until we ship an .ico
-    wcscpy_s(nid.szTip, ARRAYSIZE(nid.szTip), L"WM_LEAVEMYTASKBARALONE");
+    nid.hIcon = static_cast<HICON>(LoadImageW(GetModuleHandleW(nullptr),
+                                              MAKEINTRESOURCEW(IDI_MSTSFENCE_ICON), IMAGE_ICON,
+                                              GetSystemMetrics(SM_CXSMICON),
+                                              GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR));
+    if (nid.hIcon == nullptr)
+        nid.hIcon = LoadIconW(nullptr, IDI_APPLICATION);  // fallback if the resource is missing
+    wcscpy_s(nid.szTip, ARRAYSIZE(nid.szTip), L"mstsfence");
     Shell_NotifyIconW(NIM_ADD, &nid);
 }
 
@@ -206,12 +212,12 @@ static void ShowAbout(HWND hwnd)
 {
     wchar_t msg[512];
     swprintf_s(msg, ARRAYSIZE(msg),
-               L"WM_LEAVEMYTASKBARALONE\nv%hs\n\n"
+               L"mstsfence\nv%hs\n\n"
                L"Keeps mstsc's full-screen window and session resolution within the\n"
                L"monitor work area, so the host taskbar stays visible at 1:1.\n\n"
                L"(placeholder about box)",
-               WMLTA_VERSION_STRING);
-    MessageBoxW(hwnd, msg, L"About WM_LEAVEMYTASKBARALONE", MB_OK | MB_ICONINFORMATION);
+               MSTSFENCE_VERSION_STRING);
+    MessageBoxW(hwnd, msg, L"About mstsfence", MB_OK | MB_ICONINFORMATION);
 }
 
 static void ShowContextMenu(HWND hwnd)
@@ -321,7 +327,7 @@ static int RunTray(HINSTANCE hinst)
 {
     // Single instance: a second launch (e.g. manual run while the login copy is
     // up) bows out so we don't stack two tray icons / two hooks.
-    HANDLE mtx = CreateMutexW(nullptr, FALSE, L"Local\\WM_LEAVEMYTASKBARALONE.controller");
+    HANDLE mtx = CreateMutexW(nullptr, FALSE, L"Local\\mstsfence.controller");
     if (mtx && GetLastError() == ERROR_ALREADY_EXISTS)
     {
         CloseHandle(mtx);
@@ -334,7 +340,7 @@ static int RunTray(HINSTANCE hinst)
     wc.cbSize = sizeof(wc);
     wc.lpfnWndProc = WndProc;
     wc.hInstance = hinst;
-    wc.lpszClassName = L"WMLTA_Controller";
+    wc.lpszClassName = L"MSTSFENCE_Controller";
     if (!RegisterClassExW(&wc))
     {
         return 1;
@@ -342,7 +348,7 @@ static int RunTray(HINSTANCE hinst)
 
     // A real (top-level) window, never shown -- message-only windows don't
     // receive the TaskbarCreated broadcast, so we need this kind.
-    g_hwnd = CreateWindowExW(0, wc.lpszClassName, L"WM_LEAVEMYTASKBARALONE", WS_OVERLAPPED, 0, 0, 0,
+    g_hwnd = CreateWindowExW(0, wc.lpszClassName, L"mstsfence", WS_OVERLAPPED, 0, 0, 0,
                              0, nullptr, nullptr, hinst, nullptr);
     if (!g_hwnd)
     {
@@ -355,8 +361,8 @@ static int RunTray(HINSTANCE hinst)
     {
         MessageBoxW(g_hwnd,
                     L"Could not install the WH_CBT hook -- mstsc windows won't be adjusted.\n"
-                    L"(Is wmltahook.dll next to wmlta.exe?)",
-                    L"WM_LEAVEMYTASKBARALONE", MB_OK | MB_ICONWARNING);
+                    L"(Is mstsfencehook.dll next to mstsfence.exe?)",
+                    L"mstsfence", MB_OK | MB_ICONWARNING);
         // keep running so the tray is still usable / Exit can unregister
     }
 

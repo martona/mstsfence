@@ -1,4 +1,4 @@
-// wmltahook.dll -- injected into mstsc by the controller's global WH_CBT hook
+// mstsfencehook.dll -- injected into mstsc by the controller's global WH_CBT hook
 // (inert in every other process; DllMain filters by exe name). It makes mstsc size
 // its full-screen window and negotiate its session resolution to the monitor work
 // area instead of the whole monitor, so the host taskbar stays visible at 1:1.
@@ -10,7 +10,7 @@
 // per-device work area), and GetSystemMetrics (SM_C*SCREEN := primary work area;
 // SM_C*VIRTUALSCREEN only when single-monitor, else multimon placement breaks).
 //
-// Light log-once tracing goes to %TEMP%\wmltahook.log when WMLTA_TRACE=1; silent otherwise.
+// Light log-once tracing goes to %TEMP%\mstsfencehook.log when MSTSFENCE_TRACE=1; silent otherwise.
 
 #include <windows.h>
 
@@ -32,7 +32,7 @@
 
 static bool g_isMstsc = false;
 static LONG g_installed = 0;
-static bool g_trace = false;      // %TEMP%\wmltahook.log + OutputDebugString; off unless WMLTA_TRACE is set
+static bool g_trace = false;      // %TEMP%\mstsfencehook.log + OutputDebugString; off unless MSTSFENCE_TRACE is set
 static bool g_swpHooked = false;  // SetWindowPos observe-hook is only installed when tracing
 
 // ---------------------------------------------------------------------------
@@ -51,7 +51,7 @@ static void LogV(const wchar_t* fmt, va_list ap)
 
     wchar_t path[MAX_PATH];
     DWORD t = GetTempPathW(ARRAYSIZE(path), path);
-    if (t == 0 || t > ARRAYSIZE(path) || wcscat_s(path, L"wmltahook.log") != 0)
+    if (t == 0 || t > ARRAYSIZE(path) || wcscat_s(path, L"mstsfencehook.log") != 0)
     {
         return;
     }
@@ -340,7 +340,7 @@ extern "C" __declspec(dllexport) LRESULT CALLBACK CBTProc(int nCode, WPARAM wPar
     if (nCode >= 0 && g_isMstsc)
     {
         EnsureHooksInstalled();
-        wmlta::DarkModeOnCbt(nCode, reinterpret_cast<HWND>(wParam));
+        mstsfence::DarkModeOnCbt(nCode, reinterpret_cast<HWND>(wParam));
     }
     return CallNextHookEx(nullptr, nCode, wParam, lParam);
 }
@@ -367,9 +367,9 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD reason, LPVOID lpReserved)
         g_isMstsc = HostIsMstsc();
         if (g_isMstsc)
         {
-            g_trace = GetEnvironmentVariableW(L"WMLTA_TRACE", nullptr, 0) > 0;
+            g_trace = GetEnvironmentVariableW(L"MSTSFENCE_TRACE", nullptr, 0) > 0;
             Log(L"ATTACH pid=%lu (mstsc) -- DLL is in. (trace=%d)", GetCurrentProcessId(), g_trace);
-            wmlta::DarkModeOnAttach();
+            mstsfence::DarkModeOnAttach();
         }
         break;
 

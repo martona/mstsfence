@@ -1,4 +1,4 @@
-# WM_LEAVEMYTASKBARALONE
+# mstsfence
 
 Make `mstsc.exe`, in full-screen mode, size itself **to the monitor's work area
 (`rcWork`) instead of the whole monitor (`rcMonitor`)** — so the host taskbar
@@ -33,12 +33,12 @@ The DLL filters by exe name, so outside `mstsc` it loads and does nothing.
 
 | Binary          | Role |
 |-----------------|------|
-| `wmlta.exe`     | Tray controller. Installs the global `WH_CBT` hook, survives Explorer restarts, and registers itself to run at login. `--diag` dumps each monitor's `rcMonitor` vs `rcWork`. |
-| `wmltahook.dll` | Injected hook. Inert except in `mstsc.exe`, where it Detours `GetMonitorInfo` to collapse `rcMonitor` → `rcWork`. |
+| `mstsfence.exe`     | Tray controller. Installs the global `WH_CBT` hook, survives Explorer restarts, and registers itself to run at login. `--diag` dumps each monitor's `rcMonitor` vs `rcWork`. |
+| `mstsfencehook.dll` | Injected hook. Inert except in `mstsc.exe`, where it Detours `GetMonitorInfo` to collapse `rcMonitor` → `rcWork`. |
 
 ## Usage
 
-Run `wmlta.exe` — it lives in the tray (no window), installs the hook, and
+Run `mstsfence.exe` — it lives in the tray (no window), installs the hook, and
 registers itself to run at login. Then launch `mstsc` any way you like (`.rdp`,
 jump list, Start menu) and go full-screen; it sizes to the work area.
 
@@ -47,14 +47,14 @@ jump list, Start menu) and go full-screen; it sizes to the work area.
   next login. The icon re-appears automatically if Explorer restarts.
 
 ```powershell
-wmlta            # run in the tray (default)
-wmlta --diag     # print each monitor's rcMonitor vs rcWork and exit
-wmlta --help
+mstsfence            # run in the tray (default)
+mstsfence --diag     # print each monitor's rcMonitor vs rcWork and exit
+mstsfence --help
 ```
 
-An elevated `mstsc` needs an elevated `wmlta` (a hook can't inject into a
-higher-integrity process). Set `WMLTA_TRACE=1` in mstsc's environment to get the
-hook's diagnostic log at `%TEMP%\wmltahook.log`.
+An elevated `mstsc` needs an elevated `mstsfence` (a hook can't inject into a
+higher-integrity process). Set `MSTSFENCE_TRACE=1` in mstsc's environment to get the
+hook's diagnostic log at `%TEMP%\mstsfencehook.log`.
 
 ## Dark mode
 
@@ -66,7 +66,7 @@ controls on `HCBT_ACTIVATE`), which in turn installs a thread-local
 `WH_CALLWNDPROCRET` to catch `WM_INITDIALOG` *after* the dialog processes it — so
 dialogs/property-sheet pages that build their controls late (the expanded Show
 Options tabs) get fully themed rather than half-styled. It's on by default; set
-`WMLTA_NODARK=1` in mstsc's environment to disable it. umbra is pulled in by vcpkg
+`MSTSFENCE_NODARK=1` in mstsc's environment to disable it. umbra is pulled in by vcpkg
 from the WM_UMBRA **git registry** declared in `src/vcpkg.json`'s
 `vcpkg-configuration` — no extra setup, manifest mode resolves it on configure
 (the first build clones + builds umbra, so it takes a little longer).
@@ -82,7 +82,7 @@ by the build script). Ninja is used if present.
 ./scripts/build_windows.ps1 -Version 0.2.0.0       # stamp the version resources
 ```
 
-Output lands in `build/windows-<config>/` (`wmlta.exe` + `wmltahook.dll` side by
+Output lands in `build/windows-<config>/` (`mstsfence.exe` + `mstsfencehook.dll` side by
 side). Signing uses the [`sign`](https://github.com/dotnet/sign) CLI with Azure
 Trusted Signing and runs only when `ARTIFACT_SIGNING_ENDPOINT`,
 `ARTIFACT_SIGNING_ACCOUNT`, and `ARTIFACT_SIGNING_CERTIFICATE_PROFILE` are all set.

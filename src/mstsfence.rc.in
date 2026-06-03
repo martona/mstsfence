@@ -1,0 +1,44 @@
+// CMake-templated from src/mstsfence.rc.in. Do not edit the generated .rc directly.
+#include <winres.h>
+#include "resource.h"
+
+/////////////////////////////////////////////////////////////////////////////
+// Icon  (the lowest-ID icon is what Explorer / the shell shows for the .exe)
+/////////////////////////////////////////////////////////////////////////////
+IDI_MSTSFENCE_ICON ICON "@MSTSFENCE_ICON_PATH@"
+
+/////////////////////////////////////////////////////////////////////////////
+// Version
+/////////////////////////////////////////////////////////////////////////////
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION @MSTSFENCE_VERSION_MAJOR@,@MSTSFENCE_VERSION_MINOR@,@MSTSFENCE_VERSION_PATCH@,@MSTSFENCE_VERSION_BUILD@
+ PRODUCTVERSION @MSTSFENCE_VERSION_MAJOR@,@MSTSFENCE_VERSION_MINOR@,@MSTSFENCE_VERSION_PATCH@,@MSTSFENCE_VERSION_BUILD@
+ FILEFLAGSMASK 0x3fL
+#ifdef _DEBUG
+ FILEFLAGS 0x1L
+#else
+ FILEFLAGS 0x0L
+#endif
+ FILEOS 0x40004L
+ FILETYPE 0x1L
+ FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "CompanyName",      "Marton Anka"
+            VALUE "FileDescription",  "mstsfence.exe"
+            VALUE "FileVersion",      "@MSTSFENCE_VERSION@"
+            VALUE "InternalName",     "mstsfence.exe"
+            VALUE "LegalCopyright",   "Copyright (C) 2026 Marton Anka"
+            VALUE "OriginalFilename", "mstsfence.exe"
+            VALUE "ProductName",      "mstsfence"
+            VALUE "ProductVersion",   "@MSTSFENCE_VERSION@"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

@@ -23,15 +23,15 @@
 namespace
 {
     // ---- per-window state props + subclass ids ('WL' = 0x574C) -------------
-    constexpr wchar_t kReadyProp[]   = L"WmLtaDark.Ready";
-    constexpr wchar_t kBackoffProp[] = L"WmLtaDark.Backoff";
+    constexpr wchar_t kReadyProp[]   = L"MstsFenceDark.Ready";
+    constexpr wchar_t kBackoffProp[] = L"MstsFenceDark.Backoff";
 
     constexpr UINT_PTR kDialogBackfillSubclassId   = 0x574C0001;
     constexpr UINT_PTR kComboBoxCtlColorSubclassId = 0x574C0002;
 
     INIT_ONCE     g_darkModeInitOnce  = INIT_ONCE_STATIC_INIT;
     volatile LONG g_hookModulePinned  = 0;
-    bool          g_darkEnabled       = false;  // set in DarkModeOnAttach (off if WMLTA_NODARK)
+    bool          g_darkEnabled       = false;  // set in DarkModeOnAttach (off if MSTSFENCE_NODARK)
 
     // ====================================================================
     // module pin + one-time umbra init
@@ -539,13 +539,13 @@ namespace
 // ========================================================================
 // public entry points (called from hook.cpp, mstsc-only)
 // ========================================================================
-namespace wmlta
+namespace mstsfence
 {
     void DarkModeOnAttach()
     {
         // On unless explicitly disabled, so a misbehaving dialog can be turned off
         // without a rebuild.
-        g_darkEnabled = ::GetEnvironmentVariableW(L"WMLTA_NODARK", nullptr, 0) == 0;
+        g_darkEnabled = ::GetEnvironmentVariableW(L"MSTSFENCE_NODARK", nullptr, 0) == 0;
     }
 
     void DarkModeOnCbt(int code, HWND hwnd)

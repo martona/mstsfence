@@ -226,7 +226,7 @@ $configureArgs = @(
 )
 
 if ($Version) {
-    $configureArgs += "-DWMLTA_VERSION=$Version"
+    $configureArgs += "-DMSTSFENCE_VERSION=$Version"
 }
 
 # vcpkg is wired only when a manifest exists (none today; added when we pull in
@@ -270,10 +270,10 @@ elseif (-not $Generator -and -not $ninja) {
     Write-Host "Ninja and NMake were not found; letting CMake choose the default generator."
 }
 
-Write-Host "Configuring wmlta ($BuildType, $Triplet)..."
+Write-Host "Configuring mstsfence ($BuildType, $Triplet)..."
 Invoke-NativeCommand -FilePath $cmakeExe -Arguments $configureArgs
 
-Write-Host "Building wmlta..."
+Write-Host "Building mstsfence..."
 Invoke-NativeCommand -FilePath $cmakeExe -Arguments @("--build", $buildDir, "--config", $BuildType, "--parallel", "$Parallel")
 
 Write-Host "Built: $buildDir"
