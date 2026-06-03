@@ -14,6 +14,7 @@
 // closes and never holds a dangling subclass pointer.
 
 #include "darkmode.h"
+#include "settings.h"
 
 #include <windows.h>
 #include <commctrl.h>
@@ -543,9 +544,8 @@ namespace mstsfence
 {
     void DarkModeOnAttach()
     {
-        // On unless explicitly disabled, so a misbehaving dialog can be turned off
-        // without a rebuild.
-        g_darkEnabled = ::GetEnvironmentVariableW(L"MSTSFENCE_NODARK", nullptr, 0) == 0;
+        // Governed by the DarkMode setting (HKCU\Software\mstsfence, default on).
+        g_darkEnabled = DarkModeEnabled();
     }
 
     void DarkModeOnCbt(int code, HWND hwnd)

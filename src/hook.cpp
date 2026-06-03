@@ -29,11 +29,13 @@
 #include <cwchar>
 
 #include "darkmode.h"
+#include "settings.h"
 
 static bool g_isMstsc = false;
 static LONG g_installed = 0;
 static bool g_trace = false;      // %TEMP%\mstsfencehook.log + OutputDebugString; off unless MSTSFENCE_TRACE is set
 static bool g_swpHooked = false;  // SetWindowPos observe-hook is only installed when tracing
+static bool g_fenceEnabled = false;  // HKCU\Software\mstsfence\Fence (default on); read once at attach
 
 // ---------------------------------------------------------------------------
 // logging
@@ -298,6 +300,8 @@ static BOOL WINAPI Hooked_SetWindowPos(HWND hwnd, HWND after, int x, int y, int 
 // ---------------------------------------------------------------------------
 static void EnsureHooksInstalled()
 {
+    if (!g_fenceEnabled)
+        return;  // taskbar fencing disabled in settings -> leave mstsc's sizing alone
     if (InterlockedCompareExchange(&g_installed, 1, 0) != 0)
     {
         return;
@@ -368,7 +372,9 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD reason, LPVOID lpReserved)
         if (g_isMstsc)
         {
             g_trace = GetEnvironmentVariableW(L"MSTSFENCE_TRACE", nullptr, 0) > 0;
-            Log(L"ATTACH pid=%lu (mstsc) -- DLL is in. (trace=%d)", GetCurrentProcessId(), g_trace);
+            g_fenceEnabled = mstsfence::FenceEnabled();
+            Log(L"ATTACH pid=%lu (mstsc) -- DLL is in. (trace=%d fence=%d)",
+                GetCurrentProcessId(), g_trace, g_fenceEnabled);
             mstsfence::DarkModeOnAttach();
         }
         break;

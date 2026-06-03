@@ -34,6 +34,7 @@
 
 #include "version.h"
 #include "resource.h"
+#include "settings.h"
 
 // ---------------------------------------------------------------------------
 // shared helpers
@@ -140,6 +141,7 @@ enum
 {
     ID_ABOUT = 1001,
     ID_EXIT = 1002,
+    ID_SETTINGS = 1003,
 };
 static const UINT TRAY_UID = 1;
 
@@ -218,6 +220,58 @@ static const wchar_t kDetoursNotice[] =
     L"This product uses Microsoft Detours — Copyright (c) Microsoft Corporation, "
     L"licensed under the MIT License.";
 
+// Common dark-styling for our own modal dialogs (About / Settings).
+static void DarkenDialog(HWND hDlg)
+{
+    umbra::setDarkTitleBarEx(hDlg, true);
+    umbra::setWindowEraseBgSubclass(hDlg);
+    umbra::setDarkWndNotifySafe(hDlg, true);
+}
+
+// Settings dialog. Reads/writes HKCU\Software\mstsfence; the hook picks the values
+// up when a new mstsc session starts.
+static INT_PTR CALLBACK SettingsDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM)
+{
+    switch (msg)
+    {
+    case WM_INITDIALOG:
+    {
+        CheckDlgButton(hDlg, IDC_SET_FENCE, mstsfence::FenceEnabled()    ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hDlg, IDC_SET_DARK,  mstsfence::DarkModeEnabled() ? BST_CHECKED : BST_UNCHECKED);
+        DarkenDialog(hDlg);
+        const int checks[] = { IDC_SET_FENCE, IDC_SET_DARK };
+        for (int id : checks)
+        {
+            umbra::setDarkThemeExperimental(GetDlgItem(hDlg, id), L"Explorer");
+            umbra::setCheckboxOrRadioBtnCtrlSubclass(GetDlgItem(hDlg, id));
+        }
+        umbra::setDarkThemeExperimental(GetDlgItem(hDlg, IDOK), L"Explorer");
+        umbra::setDarkThemeExperimental(GetDlgItem(hDlg, IDCANCEL), L"Explorer");
+        return TRUE;
+    }
+
+    case WM_COMMAND:
+        switch (LOWORD(wParam))
+        {
+        case IDOK:
+            mstsfence::SetFenceEnabled(IsDlgButtonChecked(hDlg, IDC_SET_FENCE) == BST_CHECKED);
+            mstsfence::SetDarkModeEnabled(IsDlgButtonChecked(hDlg, IDC_SET_DARK) == BST_CHECKED);
+            EndDialog(hDlg, IDOK);
+            return TRUE;
+        case IDCANCEL:
+            EndDialog(hDlg, IDCANCEL);
+            return TRUE;
+        }
+        break;
+    }
+    return FALSE;
+}
+
+static void ShowSettings(HWND owner)
+{
+    DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_SETTINGS), owner, SettingsDlgProc, 0);
+}
+
 static INT_PTR CALLBACK AboutDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     switch (msg)
@@ -245,9 +299,7 @@ static INT_PTR CALLBACK AboutDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
         SetDlgItemTextW(hDlg, IDC_ABOUT_DETOURS, kDetoursNotice);
 
         // Dark-style the dialog and its controls via umbra (initialized at startup).
-        umbra::setDarkTitleBarEx(hDlg, true);
-        umbra::setWindowEraseBgSubclass(hDlg);
-        umbra::setDarkWndNotifySafe(hDlg, true);
+        DarkenDialog(hDlg);
         umbra::setDarkThemeExperimental(GetDlgItem(hDlg, IDOK), L"Explorer");
         return TRUE;
     }
@@ -289,6 +341,7 @@ static void ShowContextMenu(HWND hwnd)
     {
         return;
     }
+    AppendMenuW(menu, MF_STRING, ID_SETTINGS, L"Settings…");
     AppendMenuW(menu, MF_STRING, ID_ABOUT, L"About…");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, ID_EXIT, L"Exit");
@@ -360,6 +413,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     case WM_COMMAND:
         switch (LOWORD(wParam))
         {
+        case ID_SETTINGS:
+            ShowSettings(hwnd);
+            break;
         case ID_ABOUT:
             ShowAbout(hwnd);
             break;

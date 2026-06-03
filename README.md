@@ -42,9 +42,12 @@ Run `mstsfence.exe` — it lives in the tray (no window), installs the hook, and
 registers itself to run at login. Then launch `mstsc` any way you like (`.rdp`,
 jump list, Start menu) and go full-screen; it sizes to the work area.
 
-- **Tray menu** (right-click): *About* / *Exit*. **Exit** removes the hook and
-  unregisters autostart; a close/logoff leaves autostart in place so it returns
-  next login. The icon re-appears automatically if Explorer restarts.
+- **Tray menu** (right-click): *Settings* / *About* / *Exit*. **Settings** (stored
+  in `HKCU\Software\mstsfence`) has two toggles — fence mstsc to the work area, and
+  dark-mode mstsc — both **on by default**; they take effect for mstsc sessions
+  started afterward. **Exit** removes the hook and unregisters autostart; a
+  close/logoff leaves autostart in place so it returns next login. The icon
+  re-appears automatically if Explorer restarts.
 
 ```powershell
 mstsfence            # run in the tray (default)
@@ -65,8 +68,9 @@ driven by the controller's `WH_CBT` hook (frames on `HCBT_CREATEWND`, dialogs +
 controls on `HCBT_ACTIVATE`), which in turn installs a thread-local
 `WH_CALLWNDPROCRET` to catch `WM_INITDIALOG` *after* the dialog processes it — so
 dialogs/property-sheet pages that build their controls late (the expanded Show
-Options tabs) get fully themed rather than half-styled. It's on by default; set
-`MSTSFENCE_NODARK=1` in mstsc's environment to disable it. umbra is pulled in by vcpkg
+Options tabs) get fully themed rather than half-styled. It's on by default and
+toggled by the **Dark mode** checkbox in Settings (the `DarkMode` value under
+`HKCU\Software\mstsfence`). umbra is pulled in by vcpkg
 from the WM_UMBRA **git registry** declared in `src/vcpkg.json`'s
 `vcpkg-configuration` — no extra setup, manifest mode resolves it on configure
 (the first build clones + builds umbra, so it takes a little longer).

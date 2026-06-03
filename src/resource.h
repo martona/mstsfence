@@ -11,3 +11,8 @@
 #define IDC_ABOUT_COPYRIGHT  204
 #define IDC_ABOUT_LINK       205
 #define IDC_ABOUT_DETOURS    206
+
+// Settings dialog and its controls.
+#define IDD_SETTINGS         210
+#define IDC_SET_FENCE        211
+#define IDC_SET_DARK         212

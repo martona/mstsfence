@@ -157,6 +157,7 @@ configure_file(
 add_library(mstsfencehook SHARED
     "src/hook.cpp"
     "src/darkmode.cpp"
+    "src/settings.cpp"
     "${CMAKE_CURRENT_BINARY_DIR}/generated/mstsfencehook.rc"
 )
 target_include_directories(mstsfencehook PRIVATE
@@ -166,7 +167,7 @@ target_compile_definitions(mstsfencehook PRIVATE
     WIN32 UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX
     _WIN32_WINNT=0x0A00 NTDDI_VERSION=0x0A000000)   # Win10+ for umbra's dark-mode APIs
 target_link_libraries(mstsfencehook PRIVATE
-    detours_imported umbra::umbra user32 uxtheme dwmapi gdi32 comctl32)
+    detours_imported umbra::umbra user32 advapi32 uxtheme dwmapi gdi32 comctl32)
 if (MSVC)
     target_compile_options(mstsfencehook PRIVATE /utf-8 /W4)
 endif()
@@ -178,6 +179,7 @@ endif()
 # ---------------------------------------------------------------------------
 add_executable(mstsfence WIN32
     "src/main.cpp"
+    "src/settings.cpp"
     "${CMAKE_CURRENT_BINARY_DIR}/generated/mstsfence.rc"
     # CMake auto-recognizes .manifest sources and embeds them via mt.exe.
     "src/mstsfence.exe.manifest"
