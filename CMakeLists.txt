@@ -186,8 +186,10 @@ target_include_directories(mstsfence PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
     "${CMAKE_CURRENT_BINARY_DIR}/generated")
 target_compile_definitions(mstsfence PRIVATE
-    WIN32 UNICODE _UNICODE _WINDOWS WIN32_LEAN_AND_MEAN NOMINMAX)
-target_link_libraries(mstsfence PRIVATE user32 shell32 advapi32)
+    WIN32 UNICODE _UNICODE _WINDOWS WIN32_LEAN_AND_MEAN NOMINMAX
+    _WIN32_WINNT=0x0A00 NTDDI_VERSION=0x0A000000)   # Win10+ for umbra's dark-mode APIs
+target_link_libraries(mstsfence PRIVATE
+    user32 shell32 advapi32 umbra::umbra uxtheme dwmapi gdi32 comctl32)
 if (MSVC)
     target_compile_options(mstsfence PRIVATE /utf-8 /W4)
     target_link_options(mstsfence PRIVATE "/ENTRY:wWinMainCRTStartup")

@@ -23,7 +23,10 @@
 
 #include <windows.h>
 
+#include <commctrl.h>
 #include <shellapi.h>
+
+#include <umbra.h>
 
 #include <cstdio>
 #include <cstring>
@@ -208,16 +211,72 @@ static void RemoveTrayIcon(HWND hwnd)
     Shell_NotifyIconW(NIM_DELETE, &nid);
 }
 
-static void ShowAbout(HWND hwnd)
+#define GITHUB_URL L"https://github.com/martona/mstsfence"
+
+// Attribution for Microsoft Detours (umbra is the author's own, so omitted).
+static const wchar_t kDetoursNotice[] =
+    L"This product uses Microsoft Detours — Copyright (c) Microsoft Corporation, "
+    L"licensed under the MIT License.";
+
+static INT_PTR CALLBACK AboutDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
 {
-    wchar_t msg[512];
-    swprintf_s(msg, ARRAYSIZE(msg),
-               L"mstsfence\nv%hs\n\n"
-               L"Keeps mstsc's full-screen window and session resolution within the\n"
-               L"monitor work area, so the host taskbar stays visible at 1:1.\n\n"
-               L"(placeholder about box)",
-               MSTSFENCE_VERSION_STRING);
-    MessageBoxW(hwnd, msg, L"About mstsfence", MB_OK | MB_ICONINFORMATION);
+    switch (msg)
+    {
+    case WM_INITDIALOG:
+    {
+        // Large icon (the 64px frame) for the dialog body; a small one for the title bar.
+        HICON hBig = static_cast<HICON>(LoadImageW(GetModuleHandleW(nullptr),
+            MAKEINTRESOURCEW(IDI_MSTSFENCE_ICON), IMAGE_ICON, 64, 64, LR_SHARED));
+        if (hBig)
+            SendDlgItemMessageW(hDlg, IDC_ABOUT_ICON, STM_SETICON, reinterpret_cast<WPARAM>(hBig), 0);
+        HICON hSmall = static_cast<HICON>(LoadImageW(GetModuleHandleW(nullptr),
+            MAKEINTRESOURCEW(IDI_MSTSFENCE_ICON), IMAGE_ICON,
+            GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_SHARED));
+        if (hSmall)
+            SendMessageW(hDlg, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(hSmall));
+
+        wchar_t ver[64];
+        swprintf_s(ver, ARRAYSIZE(ver), L"Version %hs", MSTSFENCE_VERSION_STRING);
+        SetDlgItemTextW(hDlg, IDC_ABOUT_NAME, L"mstsfence");
+        SetDlgItemTextW(hDlg, IDC_ABOUT_VERSION, ver);
+        SetDlgItemTextW(hDlg, IDC_ABOUT_COPYRIGHT, L"Copyright © 2026 Marton Anka");
+        SetDlgItemTextW(hDlg, IDC_ABOUT_LINK,
+            L"<a href=\"" GITHUB_URL L"\">github.com/martona/mstsfence</a>");
+        SetDlgItemTextW(hDlg, IDC_ABOUT_DETOURS, kDetoursNotice);
+
+        // Dark-style the dialog and its controls via umbra (initialized at startup).
+        umbra::setDarkTitleBarEx(hDlg, true);
+        umbra::setWindowEraseBgSubclass(hDlg);
+        umbra::setDarkWndNotifySafe(hDlg, true);
+        umbra::setDarkThemeExperimental(GetDlgItem(hDlg, IDOK), L"Explorer");
+        return TRUE;
+    }
+
+    case WM_NOTIFY:
+    {
+        auto nmhdr = reinterpret_cast<LPNMHDR>(lParam);
+        if (nmhdr->idFrom == IDC_ABOUT_LINK && (nmhdr->code == NM_CLICK || nmhdr->code == NM_RETURN))
+        {
+            ShellExecuteW(hDlg, L"open", GITHUB_URL, nullptr, nullptr, SW_SHOWNORMAL);
+            return TRUE;
+        }
+        break;
+    }
+
+    case WM_COMMAND:
+        if (LOWORD(wParam) == IDOK || LOWORD(wParam) == IDCANCEL)
+        {
+            EndDialog(hDlg, 0);
+            return TRUE;
+        }
+        break;
+    }
+    return FALSE;
+}
+
+static void ShowAbout(HWND owner)
+{
+    DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_ABOUT), owner, AboutDlgProc, 0);
 }
 
 static void ShowContextMenu(HWND hwnd)
@@ -333,6 +392,12 @@ static int RunTray(HINSTANCE hinst)
         CloseHandle(mtx);
         return 0;
     }
+
+    // Common controls v6 (SysLink + subclassing in the About dialog) and dark
+    // mode (dark tray popup menu + a themable About dialog) -- both process-wide.
+    INITCOMMONCONTROLSEX icc{ sizeof(icc), ICC_STANDARD_CLASSES | ICC_LINK_CLASS };
+    InitCommonControlsEx(&icc);
+    umbra::initDarkMode();
 
     g_wmTaskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
 
