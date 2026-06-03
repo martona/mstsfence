@@ -1,0 +1,48 @@
+# Compiled objects / libraries
+*.obj
+*.o
+*.lib
+*.a
+*.pdb
+*.ilk
+*.exp
+*.map
+
+# Compiled binaries
+*.exe
+*.com
+*.dll
+
+# Precompiled headers
+*.gch
+*.pch
+
+# CMake / out-of-source builds
+build/
+out/
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+
+# vcpkg local cache and installed binaries
+vcpkg_installed/
+vcpkg-installed/
+vcpkg-cache/
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.VC.db
+*.VC.VC.opendb
+ipch/
+
+# macOS Finder metadata
+.DS_Store
+
+# Patches
+*.patch
+*.diff

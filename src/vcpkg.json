@@ -1,0 +1,19 @@
+{
+  "name": "wmlta",
+  "version": "0.1.0",
+  "dependencies": [
+    "detours",
+    "umbra"
+  ],
+  "builtin-baseline": "4ebb30167f14487dcb71fac13efbf63273ab6a3f",
+  "vcpkg-configuration": {
+    "registries": [
+      {
+        "kind": "git",
+        "repository": "https://github.com/martona/WM_UMBRA",
+        "baseline": "3239269d3f217f42a88a76e630b4934dc5208460",
+        "packages": [ "umbra" ]
+      }
+    ]
+  }
+}
