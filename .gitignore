@@ -46,3 +46,6 @@ ipch/
 # Patches
 *.patch
 *.diff
+
+# claude
+.claude/
