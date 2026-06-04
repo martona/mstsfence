@@ -1,0 +1,53 @@
+name: Release (tag)
+
+# Auto-fires when a v* tag is pushed (e.g. `git tag v0.1.0.1 && git push
+# --tags`, or tag creation in the GitHub UI). Always creates a draft so the
+# release can be reviewed before publication — flip via `gh release edit
+# --draft=false v0.1.0.1` or the UI's Publish button.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    name: Resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.compute.outputs.version }}
+      tag: ${{ steps.compute.outputs.tag }}
+    steps:
+      - id: compute
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+          # The build stamps a four-part W.X.Y.Z version (CMake rejects anything
+          # else), so validate the tag here for a clear early failure.
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Tag '$tag' must be vW.X.Y.Z (four dot-separated integers)"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Resolved: version=$version tag=$tag"
+
+  pipeline:
+    name: Build, sign, publish
+    needs: resolve
+    uses: ./.github/workflows/_release.yml
+    with:
+      version: ${{ needs.resolve.outputs.version }}
+      tag: ${{ needs.resolve.outputs.tag }}
+      draft: true
+    secrets: inherit

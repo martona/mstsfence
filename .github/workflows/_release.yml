@@ -1,0 +1,232 @@
+name: Release pipeline (reusable)
+
+# Build + sign + package + attest + publish. Invoked from release-tag.yml and
+# release-manual.yml; not directly triggerable. Callers compute version/tag/draft
+# and pass them in. Windows only (amd64 + arm64).
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+        description: 'W.X.Y.Z (no v prefix)'
+      tag:
+        required: true
+        type: string
+        description: 'Full tag name including v prefix (e.g. v0.1.0.1)'
+      draft:
+        required: true
+        type: boolean
+        description: 'Create the GitHub release as a draft (not published)'
+
+permissions:
+  contents: write       # create release + upload assets
+  id-token: write       # sigstore OIDC for attestation + Azure OIDC for signing
+  attestations: write   # write build provenance attestation
+
+jobs:
+  build-windows:
+    name: Build Windows (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    # The release-signing environment scopes the OIDC token's `subject` claim to
+    # repo:martona/mstsfence:environment:release-signing, which the Azure-side
+    # federated credential matches on. Harmless when signing isn't configured —
+    # the signing steps below self-skip on a missing ARTIFACT_SIGNING_ENDPOINT.
+    environment: release-signing
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: windows-latest
+            triplet: x64-windows-static
+            vcvars_arch: amd64
+          - arch: arm64
+            runner: windows-11-arm
+            triplet: arm64-windows-static
+            vcvars_arch: arm64
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      MSTSFENCE_RELEASE_TRIPLET: ${{ matrix.triplet }}
+      VCPKG_BINARY_SOURCES: clear;files,${{ github.workspace }}/vcpkg-cache,readwrite
+    steps:
+      - name: Checkout mstsfence
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Read vcpkg baseline
+        id: vcpkg-baseline
+        run: |
+          $manifest = Get-Content -Raw src\vcpkg.json | ConvertFrom-Json
+          $baseline = $manifest.'builtin-baseline'
+          if (-not $baseline) {
+            throw "src\vcpkg.json must define builtin-baseline for CI."
+          }
+          "ref=$baseline" >> $env:GITHUB_OUTPUT
+
+      - name: Set vcpkg short root
+        run: |
+          $workspaceRoot = [System.IO.Path]::GetPathRoot($env:GITHUB_WORKSPACE)
+          if (-not $workspaceRoot) {
+            throw "Could not determine workspace drive from GITHUB_WORKSPACE='$env:GITHUB_WORKSPACE'."
+          }
+          $vcpkgRoot = Join-Path $workspaceRoot "v"
+          if (Test-Path $vcpkgRoot) {
+            throw "vcpkg short root already exists: $vcpkgRoot"
+          }
+          New-Item -ItemType Directory -Path $vcpkgRoot | Out-Null
+          "VCPKG_ROOT=$vcpkgRoot" >> $env:GITHUB_ENV
+          Write-Host "Using VCPKG_ROOT=$vcpkgRoot"
+
+      - name: Checkout vcpkg
+        run: |
+          git clone --no-tags https://github.com/microsoft/vcpkg.git $env:VCPKG_ROOT
+          git -C $env:VCPKG_ROOT checkout --detach ${{ steps.vcpkg-baseline.outputs.ref }}
+
+      - name: Bootstrap vcpkg
+        run: |
+          $bootstrap = Join-Path $env:VCPKG_ROOT "bootstrap-vcpkg.bat"
+          & $bootstrap -disableMetrics
+
+      - name: Prepare vcpkg binary cache
+        run: New-Item -ItemType Directory -Force vcpkg-cache | Out-Null
+
+      - name: Cache vcpkg binaries
+        uses: actions/cache@v5
+        with:
+          path: vcpkg-cache
+          key: ${{ runner.os }}-${{ runner.arch }}-vcpkg-${{ matrix.triplet }}-${{ hashFiles('src/vcpkg.json') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-vcpkg-${{ matrix.triplet }}-
+
+      - name: Build Release
+        run: .\scripts\build_windows.ps1 -BuildType Release -Triplet $env:MSTSFENCE_RELEASE_TRIPLET -VcVarsArch ${{ matrix.vcvars_arch }} -Version "${{ inputs.version }}" -DisableCodeSigning
+
+      - name: Verify Windows artifacts
+        run: |
+          foreach ($f in @(".\build\windows-release\mstsfence.exe", ".\build\windows-release\mstsfencehook.dll")) {
+            if (-not (Test-Path $f)) {
+              throw "Missing expected artifact: $f"
+            }
+          }
+
+      - name: Verify static dependency closure
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+          $installPath = & $vswhere -latest -products * -property installationPath
+          $vcvars = Join-Path $installPath "VC\Auxiliary\Build\vcvarsall.bat"
+          foreach ($bin in @(".\build\windows-release\mstsfence.exe", ".\build\windows-release\mstsfencehook.dll")) {
+            $dump = & cmd.exe /d /s /c "call `"$vcvars`" ${{ matrix.vcvars_arch }} >nul && dumpbin /dependents `"$bin`""
+            $dump
+            $blocked = $dump | Select-String -Pattern "VCRUNTIME|MSVCP|ucrtbase" -CaseSensitive:$false
+            if ($blocked) {
+              throw "$bin imports non-system runtime DLLs: $($blocked -join '; ')"
+            }
+          }
+
+      # --- Signing (Azure Trusted Signing). Self-skips when the repo/environment
+      # has no ARTIFACT_SIGNING_ENDPOINT var configured, so the first release can
+      # ship unsigned until the federated identity is wired up. ---
+      - name: Azure login (Trusted Signing)
+        if: ${{ vars.ARTIFACT_SIGNING_ENDPOINT != '' }}
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Sign Windows artifacts
+        if: ${{ vars.ARTIFACT_SIGNING_ENDPOINT != '' }}
+        uses: azure/trusted-signing-action@v0
+        with:
+          endpoint: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
+          trusted-signing-account-name: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.ARTIFACT_SIGNING_CERTIFICATE_PROFILE }}
+          files-folder: ${{ github.workspace }}\build\windows-release
+          files-folder-filter: exe,dll
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Verify signatures
+        if: ${{ vars.ARTIFACT_SIGNING_ENDPOINT != '' }}
+        run: |
+          foreach ($f in @(".\build\windows-release\mstsfence.exe", ".\build\windows-release\mstsfencehook.dll")) {
+              $sig = Get-AuthenticodeSignature $f
+              if ($sig.Status -ne 'Valid') {
+                  throw "Signature on $f is not Valid: $($sig.Status) — $($sig.StatusMessage)"
+              }
+              Write-Host "[+] $f signed by: $($sig.SignerCertificate.Subject)"
+          }
+
+      - name: Package artifacts
+        run: |
+          $ver = "${{ inputs.version }}"
+          $arch = "${{ matrix.arch }}"
+          $src = ".\build\windows-release"
+          $stage = ".\release-stage"
+          New-Item -ItemType Directory -Path $stage | Out-Null
+
+          # Binaries ship VERSION-LESS so the README can link stable
+          # releases/latest/download/<name> URLs (a redirect needs a constant
+          # filename). The version still rides in the embedded VERSIONINFO and in
+          # `mstsfence --version`, and the attestation binds by SHA256, not name.
+          $binZip = Join-Path $stage "mstsfence-windows-$arch.zip"
+          Compress-Archive -Path "$src\mstsfence.exe","$src\mstsfencehook.dll" -DestinationPath $binZip
+          Write-Host "Created $binZip"
+
+          # Symbols stay VERSIONED -- they're build-tied debugging artifacts, never
+          # linked from docs, and you want the exact build's PDBs to symbolicate it.
+          $pdbs = @(Get-ChildItem -Path "$src\*.pdb")
+          if ($pdbs.Count -eq 0) {
+            throw "No PDBs found in $src — symbol shipment is required."
+          }
+          $pdbZip = Join-Path $stage "mstsfence-$ver-windows-$arch-symbols.zip"
+          Compress-Archive -Path ($pdbs | ForEach-Object { $_.FullName }) -DestinationPath $pdbZip
+          Write-Host "Created $pdbZip with $($pdbs.Count) PDB(s)"
+
+          Get-ChildItem $stage | Format-Table Name, Length
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-${{ matrix.arch }}
+          path: release-stage/*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Create release
+    needs: [build-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List artifacts
+        run: |
+          ls -la artifacts/
+          echo "Total: $(ls artifacts/ | wc -l) files"
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: 'artifacts/*'
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          name: ${{ inputs.tag }}
+          draft: ${{ inputs.draft }}
+          prerelease: false
+          generate_release_notes: true
+          files: artifacts/*
+          fail_on_unmatched_files: true

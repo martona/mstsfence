@@ -25,7 +25,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # plain `cmake ...` invocation still configures without a version flag.
 # ---------------------------------------------------------------------------
 if (NOT DEFINED MSTSFENCE_VERSION OR MSTSFENCE_VERSION STREQUAL "")
-    set(MSTSFENCE_VERSION "0.1.0.0")
+    set(MSTSFENCE_VERSION "0.1.0.1")
 endif()
 
 string(REPLACE "." ";" _mstsfence_version_parts "${MSTSFENCE_VERSION}")
@@ -150,6 +150,14 @@ configure_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/src/mstsfencehook.rc.in"
     "${CMAKE_CURRENT_BINARY_DIR}/generated/mstsfencehook.rc" @ONLY)
 
+# The app manifest is templated too, so the assemblyIdentity version tracks
+# MSTSFENCE_VERSION (one source of truth for a release) and stays arch-neutral
+# (processorArchitecture="*") for both amd64 and arm64. CMake embeds any source
+# with a .manifest extension via mt.exe, generated location included.
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/mstsfence.exe.manifest.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/mstsfence.exe.manifest" @ONLY)
+
 # ---------------------------------------------------------------------------
 # mstsfencehook.dll -- the injected hook. The OS maps it into GUI processes via the
 # controller's global WH_CBT hook; it only does anything inside mstsc.exe.
@@ -182,7 +190,7 @@ add_executable(mstsfence WIN32
     "src/settings.cpp"
     "${CMAKE_CURRENT_BINARY_DIR}/generated/mstsfence.rc"
     # CMake auto-recognizes .manifest sources and embeds them via mt.exe.
-    "src/mstsfence.exe.manifest"
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/mstsfence.exe.manifest"
 )
 target_include_directories(mstsfence PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src"

@@ -63,13 +63,35 @@ by the build script). Ninja is used if present.
 ```powershell
 ./scripts/build_windows.ps1                        # Release; signs if ARTIFACT_SIGNING_* are set
 ./scripts/build_windows.ps1 -BuildType Debug -DisableCodeSigning
-./scripts/build_windows.ps1 -Version 0.2.0.0       # stamp the version resources
+./scripts/build_windows.ps1 -Version 0.1.0.1       # stamp a specific version
 ```
 
 Output lands in `build/windows-<config>/` (`mstsfence.exe` + `mstsfencehook.dll` side by
 side). Signing uses the [`sign`](https://github.com/dotnet/sign) CLI with Azure
 Trusted Signing and runs only when `ARTIFACT_SIGNING_ENDPOINT`,
 `ARTIFACT_SIGNING_ACCOUNT`, and `ARTIFACT_SIGNING_CERTIFICATE_PROFILE` are all set.
+
+## Releasing
+
+Releases are built by GitHub Actions (`.github/workflows/`), `amd64` + `arm64`.
+Push a `vW.X.Y.Z` tag and the pipeline builds both arches, signs them (Azure
+Trusted Signing, when the signing vars/secrets are configured), and opens a
+**draft** release:
+
+```powershell
+git tag v0.1.0.1
+git push origin v0.1.0.1
+```
+
+Or run **Release (manual)** from the Actions tab with an explicit version (tick
+*publish* to release immediately instead of drafting). Either way each release
+carries, per architecture:
+
+- `mstsfence-windows-<arch>.zip` — the loose `mstsfence.exe` + `mstsfencehook.dll`.
+- `mstsfence-<version>-windows-<arch>-symbols.zip` — the matching `.pdb` symbols.
+
+Every push/PR to `master` also runs **Windows CI**, which builds both arches and
+asserts the binaries pull in no VC++ runtime DLLs (the static-CRT invariant).
 
 ## Status
 

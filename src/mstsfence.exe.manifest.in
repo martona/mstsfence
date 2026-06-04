@@ -1,11 +1,15 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
-  <assemblyIdentity type="win32" name="MartonAnka.mstsfence" version="0.1.0.0" processorArchitecture="amd64"/>
+  <!-- CMake-templated from src/mstsfence.exe.manifest.in; @MSTSFENCE_VERSION@ is
+       substituted at configure time. Do not edit the generated manifest directly.
+       processorArchitecture="*" keeps this arch-neutral so the same template
+       produces a correct manifest for both amd64 and arm64. -->
+  <assemblyIdentity type="win32" name="MartonAnka.mstsfence" version="@MSTSFENCE_VERSION@" processorArchitecture="*"/>
   <!-- Common Controls v6: SysLink in the About dialog, visual styles, SetWindowSubclass. -->
   <dependency>
     <dependentAssembly>
       <assemblyIdentity type="win32" name="Microsoft.Windows.Common-Controls" version="6.0.0.0"
-                        processorArchitecture="amd64" publicKeyToken="6595b64144ccf1df" language="*"/>
+                        processorArchitecture="*" publicKeyToken="6595b64144ccf1df" language="*"/>
     </dependentAssembly>
   </dependency>
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
