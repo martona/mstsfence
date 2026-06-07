@@ -500,6 +500,8 @@ static int RunTray(HINSTANCE hinst)
 
 int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, LPWSTR, int)
 {
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    
     int mode = 0;  // 0=tray, 1=diag, 2=help, -1=bad arg
     int argc = 0;
     LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
