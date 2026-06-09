@@ -18,6 +18,11 @@ project(mstsfence LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Compile the rdpedisp DPI-investigation scaffolding (observe hooks + DPI API probes) into
+# the hook DLL. OFF by default -- the connect-time DPI fix itself is always built; this just
+# adds the verbose logging that found it. Enable with -DMSTSFENCE_DPI_DIAG=ON.
+option(MSTSFENCE_DPI_DIAG "Build the rdpedisp DPI diagnostics scaffolding" OFF)
+
 # ---------------------------------------------------------------------------
 # Version (W.X.Y.Z)
 #
@@ -164,6 +169,7 @@ configure_file(
 # ---------------------------------------------------------------------------
 add_library(mstsfencehook SHARED
     "src/hook.cpp"
+    "src/rdpedisp.cpp"
     "src/darkmode.cpp"
     "src/settings.cpp"
     "${CMAKE_CURRENT_BINARY_DIR}/generated/mstsfencehook.rc"
@@ -174,6 +180,9 @@ target_include_directories(mstsfencehook PRIVATE
 target_compile_definitions(mstsfencehook PRIVATE
     WIN32 UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX
     _WIN32_WINNT=0x0A00 NTDDI_VERSION=0x0A000000)   # Win10+ for umbra's dark-mode APIs
+if (MSTSFENCE_DPI_DIAG)
+    target_compile_definitions(mstsfencehook PRIVATE MSTSFENCE_DPI_DIAG=1)
+endif()
 target_link_libraries(mstsfencehook PRIVATE
     detours_imported umbra::umbra user32 advapi32 uxtheme dwmapi gdi32 comctl32 shcore)
 if (MSVC)

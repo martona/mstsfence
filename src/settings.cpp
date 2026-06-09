@@ -31,7 +31,9 @@ namespace mstsfence
 {
     bool FenceEnabled()    { return ReadFlag(L"Fence", true); }
     bool DarkModeEnabled() { return ReadFlag(L"DarkMode", true); }
+    bool DpiFixEnabled()   { return ReadFlag(L"DpiFix", false); }  // hidden feature -> default off
 
     void SetFenceEnabled(bool on)    { WriteFlag(L"Fence", on); }
     void SetDarkModeEnabled(bool on) { WriteFlag(L"DarkMode", on); }
+    void SetDpiFixEnabled(bool on)   { WriteFlag(L"DpiFix", on); }
 }
