@@ -102,7 +102,6 @@ static void Log(const wchar_t* fmt, ...)
 // real function pointers
 // ---------------------------------------------------------------------------
 static BOOL(WINAPI* Real_GetMonitorInfoW)(HMONITOR, LPMONITORINFO) = GetMonitorInfoW;
-static BOOL(WINAPI* Real_GetMonitorInfoA)(HMONITOR, LPMONITORINFO) = GetMonitorInfoA;
 static BOOL(WINAPI* Real_EnumDisplayMonitors)(HDC, LPCRECT, MONITORENUMPROC, LPARAM) = EnumDisplayMonitors;
 static int(WINAPI* Real_GetSystemMetrics)(int) = GetSystemMetrics;
 static BOOL(WINAPI* Real_EnumDisplaySettingsW)(LPCWSTR, DWORD, DEVMODEW*) = EnumDisplaySettingsW;
@@ -185,16 +184,6 @@ static BOOL WINAPI Hooked_GetMonitorInfoW(HMONITOR hMonitor, LPMONITORINFO lpmi)
         LOG_ONCE(L"GetMonitorInfoW rcMon=(%ld,%ld,%ld,%ld) rcWork=(%ld,%ld,%ld,%ld) -> rcMon:=rcWork",
                  lpmi->rcMonitor.left, lpmi->rcMonitor.top, lpmi->rcMonitor.right, lpmi->rcMonitor.bottom,
                  lpmi->rcWork.left, lpmi->rcWork.top, lpmi->rcWork.right, lpmi->rcWork.bottom);
-        lpmi->rcMonitor = lpmi->rcWork;
-    }
-    return ok;
-}
-
-static BOOL WINAPI Hooked_GetMonitorInfoA(HMONITOR hMonitor, LPMONITORINFO lpmi)
-{
-    BOOL ok = Real_GetMonitorInfoA(hMonitor, lpmi);
-    if (ok && lpmi)
-    {
         lpmi->rcMonitor = lpmi->rcWork;
     }
     return ok;
@@ -312,7 +301,6 @@ static void EnsureHooksInstalled()
     DetourTransactionBegin();
     DetourUpdateThread(GetCurrentThread());
     DetourAttach(&reinterpret_cast<PVOID&>(Real_GetMonitorInfoW), Hooked_GetMonitorInfoW);
-    DetourAttach(&reinterpret_cast<PVOID&>(Real_GetMonitorInfoA), Hooked_GetMonitorInfoA);
     DetourAttach(&reinterpret_cast<PVOID&>(Real_EnumDisplayMonitors), Hooked_EnumDisplayMonitors);
     DetourAttach(&reinterpret_cast<PVOID&>(Real_GetSystemMetrics), Hooked_GetSystemMetrics);
     DetourAttach(&reinterpret_cast<PVOID&>(Real_EnumDisplaySettingsW), Hooked_EnumDisplaySettingsW);
@@ -330,7 +318,6 @@ static void RemoveHooks()
     DetourTransactionBegin();
     DetourUpdateThread(GetCurrentThread());
     DetourDetach(&reinterpret_cast<PVOID&>(Real_GetMonitorInfoW), Hooked_GetMonitorInfoW);
-    DetourDetach(&reinterpret_cast<PVOID&>(Real_GetMonitorInfoA), Hooked_GetMonitorInfoA);
     DetourDetach(&reinterpret_cast<PVOID&>(Real_EnumDisplayMonitors), Hooked_EnumDisplayMonitors);
     DetourDetach(&reinterpret_cast<PVOID&>(Real_GetSystemMetrics), Hooked_GetSystemMetrics);
     DetourDetach(&reinterpret_cast<PVOID&>(Real_EnumDisplaySettingsW), Hooked_EnumDisplaySettingsW);

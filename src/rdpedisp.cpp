@@ -88,6 +88,7 @@ bool g_overrideEnabled = false;  // HKCU\Software\mstsfence\DpiOverride: rewrite
 unsigned g_overridePct = 100;    // HKCU\Software\mstsfence\DpiOverridePct: 100..500
 LONG g_layoutInstalled = 0;      // channel hooks installed (once mstscax is in)
 LONG g_forcedSend = 0;           // force-send latch -- re-armed per connection by InitSelf
+BOOL g_fakeLayout = false;       // force flap by sending a fake and the correct layout
 void* volatile g_displayChannel = nullptr;  // captured channel 'this' (diag/legacy; fix uses OnData+8)
 
 using SendLayoutWH_t  = int (*)(void* thisptr, unsigned int a, unsigned int b);     // SendMonitorLayoutPdu(this,u32,u32)
@@ -182,11 +183,21 @@ void ApplyOverride(unsigned int count, void* dcmlArray)
 {
     if (!g_overrideEnabled || !dcmlArray || count == 0 || count > 16)
         return;
-    DWORD device = DeviceScaleTierFor(g_overridePct);
+
+    auto overridePct = g_overridePct;
+    if (g_fakeLayout)
+    {
+        if (overridePct == 100)
+            overridePct = 200;
+        else
+            overridePct = 100;
+    }
+
+    DWORD device = DeviceScaleTierFor(overridePct);
     DCML* m = reinterpret_cast<DCML*>(dcmlArray);
     for (unsigned i = 0; i < count; ++i)
     {
-        m[i].DesktopScaleFactor = g_overridePct;
+        m[i].DesktopScaleFactor = overridePct;
         m[i].DeviceScaleFactor = device;
     }
 }
@@ -394,7 +405,12 @@ void TryForceSend(void* channel)
     Log(L"rdpedisp: TryForceSend (this=%p) -> %d", channel, r);
     __try
     {
+        g_fakeLayout = true;
         r = Real_SendLayoutB(channel, 0, 0);
+        Log(L"rdpedisp: forced monitor-layout send at connect (this=%p, fake: %d) -> %d", channel, g_fakeLayout, r);
+        g_fakeLayout = false;
+        r = Real_SendLayoutB(channel, 0, 0);
+        Log(L"rdpedisp: forced monitor-layout send at connect (this=%p, fake: %d) -> %d", channel, g_fakeLayout, r);
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
     {
@@ -403,7 +419,6 @@ void TryForceSend(void* channel)
         return;
     }
     InterlockedExchange(&g_forcedSend, 1);
-    Log(L"rdpedisp: forced monitor-layout send at connect (this=%p) -> %d", channel, r);
 }
 
 int Hooked_OnDataReceived(void* thisptr, void* a2, void* a3)
