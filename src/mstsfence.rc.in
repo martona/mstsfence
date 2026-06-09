@@ -51,7 +51,7 @@ STYLE DS_SETFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMEN
 CAPTION "About mstsfence"
 FONT 9, "Segoe UI", 400, 0, 0x0
 BEGIN
-    CONTROL         "", IDC_ABOUT_ICON, "Static", SS_ICON | WS_VISIBLE, 16, 16, 40, 40
+    CONTROL         "", IDC_ABOUT_ICON, "Static", SS_OWNERDRAW | WS_VISIBLE, 16, 16, 50, 50
     LTEXT           "", IDC_ABOUT_NAME, 72, 18, 214, 14
     LTEXT           "", IDC_ABOUT_VERSION, 72, 34, 214, 10
     LTEXT           "", IDC_ABOUT_COPYRIGHT, 72, 48, 214, 10
@@ -69,9 +69,15 @@ CAPTION "mstsfence settings"
 FONT 9, "Segoe UI", 400, 0, 0x0
 BEGIN
     AUTOCHECKBOX    "Fence off mstsc.exe and prevent it from encroaching on the taskbar when maximized. The remote resolution adjusts to match this computer's display work area.",
-                    IDC_SET_FENCE, 14, 14, 256, 42, BS_TOP | BS_MULTILINE | WS_TABSTOP
+                    IDC_SET_FENCE, 14, 14, 256, 28, BS_TOP | BS_MULTILINE | WS_TABSTOP
     AUTOCHECKBOX    "Dark mode for mstsc.exe. Artwork (such as logos) might not display correctly.",
-                    IDC_SET_DARK, 14, 64, 256, 26, BS_TOP | BS_MULTILINE | WS_TABSTOP
+                    IDC_SET_DARK, 14, 44, 256, 28, BS_TOP | BS_MULTILINE | WS_TABSTOP
+    AUTOCHECKBOX    "Send this computer's display scaling (DPI) to the remote host when connecting.",
+                    IDC_SET_DPIFIX, 14, 74, 256, 28, BS_TOP | BS_MULTILINE | WS_TABSTOP
+    AUTOCHECKBOX    "Override: set the host's scaling to",
+                    IDC_SET_DPIOVER, 14, 104, 136, 28, BS_TOP | BS_MULTILINE | WS_TABSTOP
+    EDITTEXT        IDC_SET_DPIPCT, 154, 104, 26, 13, ES_RIGHT | ES_NUMBER | WS_TABSTOP
+    LTEXT           "%", IDC_SET_DPIPCT_LBL, 184, 104, 10, 28
     DEFPUSHBUTTON   "OK", IDOK, 168, 130, 50, 14
     PUSHBUTTON      "Cancel", IDCANCEL, 222, 130, 50, 14
 END

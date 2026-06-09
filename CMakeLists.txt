@@ -167,6 +167,12 @@ configure_file(
 # mstsfencehook.dll -- the injected hook. The OS maps it into GUI processes via the
 # controller's global WH_CBT hook; it only does anything inside mstsc.exe.
 # ---------------------------------------------------------------------------
+add_custom_target(
+    UnstickPayloadTarget
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${CMAKE_CURRENT_SOURCE_DIR}/scripts/unstick-payload.ps1" -Dll "${CMAKE_CURRENT_BINARY_DIR}/mstsfencehook.dll" || cd .
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+    COMMENT "Unsticking mstsfencehook.dll"
+)
 add_library(mstsfencehook SHARED
     "src/hook.cpp"
     "src/rdpedisp.cpp"
@@ -188,6 +194,7 @@ target_link_libraries(mstsfencehook PRIVATE
 if (MSVC)
     target_compile_options(mstsfencehook PRIVATE /utf-8 /W4)
 endif()
+add_dependencies(mstsfencehook UnstickPayloadTarget)
 
 # ---------------------------------------------------------------------------
 # mstsfence.exe -- the controller: a tray app that installs the global WH_CBT hook,

@@ -1,6 +1,7 @@
-// rdpedisp.cpp -- see rdpedisp.h. The connect-time DPI fix plus (behind MSTSFENCE_DPI_DIAG)
-// the observe-hooks and DPI API probes that reverse-engineered it. Self-contained: its own
-// logger, its own mstscax resolution; hook.cpp just calls OnAttach()/OnDetach().
+// rdpedisp.cpp -- see rdpedisp.h. The connect-time DPI fix and the optional host-scale
+// override, plus (behind MSTSFENCE_DPI_DIAG) the observe-hooks and DPI API probes that
+// reverse-engineered it. Self-contained: its own logger, its own mstscax resolution;
+// hook.cpp just calls OnAttach()/OnDetach().
 
 #include <windows.h>
 #include <shellscalingapi.h>   // GetDpiForMonitor / DEVICE_SCALE_FACTOR (only used by the diag probes)
@@ -25,9 +26,11 @@ namespace
 {
 
 // ---------------------------------------------------------------------------
-// logging -- writes OutputDebugString + %TEMP%\mstsfencehook.log. In a diag build it is
-// always on (the whole point is to see it); otherwise it is gated on MSTSFENCE_TRACE so a
-// shipping DLL is silent. Self-contained copy so the module has no dependency on hook.cpp.
+// logging -- OutputDebugString + %TEMP%\mstsfencehook.log. Always on in a diag build (the
+// whole point is to see it); otherwise gated on MSTSFENCE_TRACE so a shipping DLL is silent.
+
+#define MSTSFENCE_DPI_DIAG 1
+
 // ---------------------------------------------------------------------------
 #ifdef MSTSFENCE_DPI_DIAG
 constexpr bool kAlwaysLog = true;
@@ -80,24 +83,26 @@ void Log(const wchar_t* fmt, ...)
 // ---------------------------------------------------------------------------
 // state
 // ---------------------------------------------------------------------------
-bool g_fixEnabled = false;                  // HKCU\Software\mstsfence\DpiFix (default off); read at attach
-LONG g_layoutInstalled = 0;                 // channel hooks installed (once mstscax is in)
-LONG g_forcedSend = 0;                      // force-send latch -- re-armed per connection by InitSelf
+bool g_fixEnabled = false;       // HKCU\Software\mstsfence\DpiFix (default off): force the send at connect
+bool g_overrideEnabled = false;  // HKCU\Software\mstsfence\DpiOverride: rewrite the host scale to a chosen %
+unsigned g_overridePct = 100;    // HKCU\Software\mstsfence\DpiOverridePct: 100..500
+LONG g_layoutInstalled = 0;      // channel hooks installed (once mstscax is in)
+LONG g_forcedSend = 0;           // force-send latch -- re-armed per connection by InitSelf
 void* volatile g_displayChannel = nullptr;  // captured channel 'this' (diag/legacy; fix uses OnData+8)
 
-// SendMonitorLayoutPdu(this,u32,u32) -- the call the dance makes; we resolve its address and
-// invoke it directly (no detour needed for the fix itself).
-using SendLayoutWH_t = int (*)(void* thisptr, unsigned int a, unsigned int b);
-using ChannelFn3_t   = int (*)(void* thisptr, void* a2, void* a3);  // OnDataReceived / InitializeSelf
+using SendLayoutWH_t  = int (*)(void* thisptr, unsigned int a, unsigned int b);     // SendMonitorLayoutPdu(this,u32,u32)
+using SendLayoutArr_t = int (*)(void* thisptr, unsigned int count, void* monitors); // Write / Send(array)
+using ChannelFn3_t    = int (*)(void* thisptr, void* a2, void* a3);                 // OnDataReceived / InitializeSelf
 
-SendLayoutWH_t Real_SendLayoutB    = nullptr;
-ChannelFn3_t   Real_OnDataReceived = nullptr;
-ChannelFn3_t   Real_InitSelf       = nullptr;
+SendLayoutWH_t  Real_SendLayoutB    = nullptr;  // the call the dance makes; we invoke its address directly
+SendLayoutArr_t Real_WriteLayout    = nullptr;  // the serializer every send funnels through (override point)
+ChannelFn3_t    Real_OnDataReceived = nullptr;
+ChannelFn3_t    Real_InitSelf       = nullptr;
 HMODULE(WINAPI* Real_LoadLibraryExW)(LPCWSTR, HANDLE, DWORD) = LoadLibraryExW;
 
 // ---------------------------------------------------------------------------
-// build identity -- the fix only runs on an mstscax whose PDB GUID we recognise, so the
-// hard-coded RVAs (and the +8 'this' adjustment) are guaranteed correct for that binary.
+// build identity -- the fix/override only run on an mstscax whose PDB GUID we recognise, so
+// the hard-coded RVAs (and the +8 'this' adjustment) are guaranteed correct for that binary.
 // Unknown build -> safe no-op. Add a row (and confirm the offsets) for each new GUID.
 // ---------------------------------------------------------------------------
 struct CvInfoRSDS { DWORD Sig; GUID Guid; DWORD Age; char Pdb[1]; };
@@ -136,31 +141,23 @@ struct KnownBuild
     DWORD sendB;     // SendMonitorLayoutPdu(this,u32,u32)      -- the fix calls this
     DWORD onData;    // RdpDisplayControlChannel::OnDataReceived -- the fix hooks this (trigger)
     DWORD initSelf;  // RdpDisplayControlChannel::InitializeSelf -- the fix hooks this (re-arm)
+    DWORD write;     // WriteMonitorLayoutPdu(this,count,monitors) -- the override hooks this
     DWORD sendA;     // SendMonitorLayoutPdu(this,count,monitors)        ] diag
-    DWORD write;     // WriteMonitorLayoutPdu(this,count,monitors)       ] observe
-    DWORD validate;  // ValidateDisplayControlMonitorLayout(count,...)   ] hooks
-    DWORD gfx;       // RdpGfxClientChannel::SetMonitorLayout(this,...)   ] only
-    DWORD gate;      // CMsTscAx::get_RemoteMonitorLayoutMatchesLocal     ]
+    DWORD validate;  // ValidateDisplayControlMonitorLayout(count,...)   ] observe
+    DWORD gfx;       // RdpGfxClientChannel::SetMonitorLayout(this,...)   ] hooks
+    DWORD gate;      // CMsTscAx::get_RemoteMonitorLayoutMatchesLocal     ] only
 };
 const KnownBuild kKnownBuilds[] = {
     // mstscax.dll PDB 6D429A36 (ships in 26100.8246 / .8328 / .8457 -- same binary).
     // For this binary the send 'this' is OnDataReceived's 'this' + 8.
     { { 0x6D429A36, 0x0C7A, 0xB9A0, { 0xA2, 0xBD, 0x12, 0x24, 0x07, 0xB8, 0xA7, 0x52 } },
-      0x2AA760, 0x2A9E90, 0x2A979C,
-      0x2AB0A0, 0x2AB2D4, 0x2A8630, 0x289D18, 0x3965C0 },
+      0x2AA760, 0x2A9E90, 0x2A979C, 0x2AB2D4,
+      0x2AB0A0, 0x2A8630, 0x289D18, 0x3965C0 },
 };
 
 // ---------------------------------------------------------------------------
-// diagnostics (compiled in only under MSTSFENCE_DPI_DIAG): the observe hooks on the whole
-// RDPEDISP layout path + the user32/gdi32/shcore DPI-read probes. None of this is needed
-// for the fix; it's the scaffolding that located it, kept for the next time.
+// the layout struct + the optional host-scale override (always compiled)
 // ---------------------------------------------------------------------------
-#ifdef MSTSFENCE_DPI_DIAG
-
-bool g_logApiProbes = false;  // the API probes are chatty -> off even in a diag build unless flipped
-bool g_patchLayout  = false;  // rewrite the layout in place before it ships (the "force any host scale" knob)
-bool g_forceGate    = false;  // answer get_RemoteMonitorLayoutMatchesLocal FALSE once (doesn't help; kept for study)
-
 #pragma pack(push, 1)
 struct DCML  // DISPLAYCONTROL_MONITOR_LAYOUT, 40 bytes; offsets confirmed from the validator disasm
 {
@@ -168,30 +165,34 @@ struct DCML  // DISPLAYCONTROL_MONITOR_LAYOUT, 40 bytes; offsets confirmed from 
     DWORD PhysicalWidth; DWORD PhysicalHeight; DWORD Orientation;
     DWORD DesktopScaleFactor; DWORD DeviceScaleFactor;
 };
-struct GfxMon { LONG Left; LONG Top; DWORD Width; DWORD Height; DWORD Field5; };  // GFX element, 20 bytes
 #pragma pack(pop)
 static_assert(sizeof(DCML) == 40, "DISPLAYCONTROL_MONITOR_LAYOUT must be 40 bytes");
-static_assert(sizeof(GfxMon) == 20, "GFX monitor element must be 20 bytes");
 
-using SendLayoutArr_t   = int (*)(void* thisptr, unsigned int count, void* monitors);
-using ValidateLayout_t  = int (*)(unsigned int count, void* monitors, void* arg3);
-using GfxSetLayout_t    = int (*)(void* thisptr, unsigned int a, void* ptr, void* arg4);
-using GetMatchesLocal_t = HRESULT (*)(void* thisptr, short* pVal);
+// DeviceScaleFactor must be 100, 140, or 180; snap the desktop scale to the nearest tier.
+DWORD DeviceScaleTierFor(unsigned int pct)
+{
+    if (pct >= 160) return 180;
+    if (pct >= 120) return 140;
+    if (pct >= 100) return 100;
+    return 0;
+}
 
-SendLayoutArr_t  Real_SendLayoutA  = nullptr;
-SendLayoutArr_t  Real_WriteLayout  = nullptr;
-ValidateLayout_t Real_Validate     = nullptr;
-GfxSetLayout_t   Real_GfxSetLayout = nullptr;
-GetMatchesLocal_t Real_MatchesLocal = nullptr;
+// Rewrite every monitor's scale to the configured % (clamped 100..500) before it ships.
+void ApplyOverride(unsigned int count, void* dcmlArray)
+{
+    if (!g_overrideEnabled || !dcmlArray || count == 0 || count > 16)
+        return;
+    DWORD device = DeviceScaleTierFor(g_overridePct);
+    DCML* m = reinterpret_cast<DCML*>(dcmlArray);
+    for (unsigned i = 0; i < count; ++i)
+    {
+        m[i].DesktopScaleFactor = g_overridePct;
+        m[i].DeviceScaleFactor = device;
+    }
+}
 
-UINT(WINAPI* Real_GetDpiForSystem)(void) = GetDpiForSystem;
-UINT(WINAPI* Real_GetDpiForWindow)(HWND) = GetDpiForWindow;
-int(WINAPI* Real_GetDeviceCaps)(HDC, int) = GetDeviceCaps;
-HRESULT(WINAPI* Real_GetDpiForMonitor)(HMONITOR, MONITOR_DPI_TYPE, UINT*, UINT*) = GetDpiForMonitor;
-HRESULT(WINAPI* Real_GetScaleFactorForMonitor)(HMONITOR, DEVICE_SCALE_FACTOR*) = GetScaleFactorForMonitor;
-LONG g_apiInstalled = 0;
-LONG g_gateCalls = 0;
-
+#ifdef MSTSFENCE_DPI_DIAG
+// (declared early so the always-compiled Hooked_WriteLayout below can log through it)
 void LogLayoutArray(const wchar_t* tag, unsigned int count, void* monitors)
 {
     DCML* m = reinterpret_cast<DCML*>(monitors);
@@ -212,30 +213,61 @@ void LogLayoutArray(const wchar_t* tag, unsigned int count, void* monitors)
             static_cast<unsigned long>(m[i].DeviceScaleFactor),
             static_cast<unsigned long>(m[i].Flags));
 }
+#endif
 
-void MaybePatchLayout(unsigned int count, void* monitors)
+// WriteMonitorLayoutPdu(this, count, monitors): the array sits at monitors+8 (an 8-byte
+// header). We rewrite the scale here (the override) just before the bytes are serialized.
+int Hooked_WriteLayout(void* thisptr, unsigned int count, void* monitors)
 {
-    if (!g_patchLayout)
-        return;
-    DCML* m = reinterpret_cast<DCML*>(monitors);
-    if (!m || count == 0 || count > 16)
-        return;
-    for (unsigned i = 0; i < count; ++i)
-        (void)m[i];  // the override knob: e.g. m[i].DesktopScaleFactor = 150; m[i].DeviceScaleFactor = 140;
+    // if override % is zero, block sending any calls
+    if (g_overridePct == 0)
+    {
+        Log(L"WRITE bailing out");
+        return 0;
+    }
+    void* arr = monitors ? reinterpret_cast<BYTE*>(monitors) + 8 : nullptr;
+    ApplyOverride(count, arr);
+#ifdef MSTSFENCE_DPI_DIAG
+    LogLayoutArray(L"WRITE", count, arr);
+#endif
+    return Real_WriteLayout(thisptr, count, monitors);
 }
+
+// ---------------------------------------------------------------------------
+// diagnostics (only under MSTSFENCE_DPI_DIAG): observe hooks on the rest of the layout path
+// + the user32/gdi32/shcore DPI-read probes. Not needed for the fix or the override.
+// ---------------------------------------------------------------------------
+#ifdef MSTSFENCE_DPI_DIAG
+
+bool g_logApiProbes = false;  // the API probes are chatty -> off even in a diag build unless flipped
+bool g_forceGate    = true;   // answer get_RemoteMonitorLayoutMatchesLocal FALSE once
+
+#pragma pack(push, 1)
+struct GfxMon { LONG Left; LONG Top; DWORD Width; DWORD Height; DWORD Field5; };  // GFX element, 20 bytes
+#pragma pack(pop)
+static_assert(sizeof(GfxMon) == 20, "GFX monitor element must be 20 bytes");
+
+using ValidateLayout_t  = int (*)(unsigned int count, void* monitors, void* arg3);
+using GfxSetLayout_t    = int (*)(void* thisptr, unsigned int a, void* ptr, void* arg4);
+using GetMatchesLocal_t = HRESULT (*)(void* thisptr, short* pVal);
+
+SendLayoutArr_t  Real_SendLayoutA  = nullptr;
+ValidateLayout_t Real_Validate     = nullptr;
+GfxSetLayout_t   Real_GfxSetLayout = nullptr;
+GetMatchesLocal_t Real_MatchesLocal = nullptr;
+
+UINT(WINAPI* Real_GetDpiForSystem)(void) = GetDpiForSystem;
+UINT(WINAPI* Real_GetDpiForWindow)(HWND) = GetDpiForWindow;
+int(WINAPI* Real_GetDeviceCaps)(HDC, int) = GetDeviceCaps;
+HRESULT(WINAPI* Real_GetDpiForMonitor)(HMONITOR, MONITOR_DPI_TYPE, UINT*, UINT*) = GetDpiForMonitor;
+HRESULT(WINAPI* Real_GetScaleFactorForMonitor)(HMONITOR, DEVICE_SCALE_FACTOR*) = GetScaleFactorForMonitor;
+LONG g_apiInstalled = 0;
+LONG g_gateCalls = 0;
 
 int Hooked_SendLayoutA(void* thisptr, unsigned int count, void* monitors)
 {
-    MaybePatchLayout(count, monitors);
     LogLayoutArray(L"SEND-A", count, monitors);
     return Real_SendLayoutA(thisptr, count, monitors);
-}
-int Hooked_WriteLayout(void* thisptr, unsigned int count, void* monitors)
-{
-    void* arr = monitors ? reinterpret_cast<BYTE*>(monitors) + 8 : nullptr;  // 8-byte header before the DCML
-    MaybePatchLayout(count, arr);
-    LogLayoutArray(L"WRITE", count, arr);
-    return Real_WriteLayout(thisptr, count, monitors);
 }
 int Hooked_SendLayoutB(void* thisptr, unsigned int a, unsigned int b)
 {
@@ -347,7 +379,7 @@ void RemoveApiProbes()
 #endif  // MSTSFENCE_DPI_DIAG
 
 // ---------------------------------------------------------------------------
-// the fix
+// the connect-time fix
 // ---------------------------------------------------------------------------
 // Replay the dance's SendMonitorLayoutPdu(channel, 0, 0) exactly once per connection, on the
 // channel's own (OnDataReceived) thread. SEH-guarded: a wrong this/state degrades to a logged
@@ -359,6 +391,7 @@ void TryForceSend(void* channel)
     if (g_forcedSend)
         return;  // already sent for this connection (re-armed by InitSelf on reconnect)
     int r = 0;
+    Log(L"rdpedisp: TryForceSend (this=%p) -> %d", channel, r);
     __try
     {
         r = Real_SendLayoutB(channel, 0, 0);
@@ -379,6 +412,7 @@ int Hooked_OnDataReceived(void* thisptr, void* a2, void* a3)
     // The display-control interface sub-object that owns SendMonitorLayoutPdu sits +8 from
     // the IWTSVirtualChannelCallback sub-object that OnDataReceived runs on (multiple
     // inheritance; offset pinned to the known build).
+    Log(L"rdpedisp: OnDataReceived this=%p", thisptr);
     TryForceSend(reinterpret_cast<BYTE*>(thisptr) + 8);
     return r;
 }
@@ -388,7 +422,7 @@ int Hooked_InitSelf(void* thisptr, void* a2, void* a3)
     int r = Real_InitSelf(thisptr, a2, a3);
     g_displayChannel = thisptr;
     InterlockedExchange(&g_forcedSend, 0);  // new connection -> allow the force again
-    Log(L"rdpedisp: channel init this=%p (re-armed)", thisptr);
+    Log(L"rdpedisp: InitSelf this=%p (re-armed)", thisptr);
     return r;
 }
 
@@ -410,7 +444,7 @@ bool InstallChannelHooks()
     if (!kb)
     {
         Log(L"rdpedisp: unrecognized mstscax build "
-            L"guid={%08lX-%04hX-%04hX-%02X%02X-%02X%02X%02X%02X%02X%02X} -- DPI fix not applied; send me this line",
+            L"guid={%08lX-%04hX-%04hX-%02X%02X-%02X%02X%02X%02X%02X%02X} -- DPI fix/override not applied; send me this line",
             g.Data1, g.Data2, g.Data3, g.Data4[0], g.Data4[1], g.Data4[2], g.Data4[3],
             g.Data4[4], g.Data4[5], g.Data4[6], g.Data4[7]);
         return true;  // safe no-op
@@ -421,25 +455,36 @@ bool InstallChannelHooks()
     Real_OnDataReceived = reinterpret_cast<ChannelFn3_t>(base + kb->onData);
     Real_InitSelf       = reinterpret_cast<ChannelFn3_t>(base + kb->initSelf);
 
+    // The serializer is only hooked when the override is on (or in a diag build to observe).
+#ifdef MSTSFENCE_DPI_DIAG
+    bool wantWrite = true;
+#else
+    bool wantWrite = g_overrideEnabled;
+#endif
+
     DetourTransactionBegin();
     DetourUpdateThread(GetCurrentThread());
     DetourAttach(&reinterpret_cast<PVOID&>(Real_OnDataReceived), Hooked_OnDataReceived);
     DetourAttach(&reinterpret_cast<PVOID&>(Real_InitSelf), Hooked_InitSelf);
+    if (wantWrite)
+    {
+        Real_WriteLayout = reinterpret_cast<SendLayoutArr_t>(base + kb->write);
+        DetourAttach(&reinterpret_cast<PVOID&>(Real_WriteLayout), Hooked_WriteLayout);
+    }
 #ifdef MSTSFENCE_DPI_DIAG
     Real_SendLayoutA  = reinterpret_cast<SendLayoutArr_t>(base + kb->sendA);
-    Real_WriteLayout  = reinterpret_cast<SendLayoutArr_t>(base + kb->write);
     Real_Validate     = reinterpret_cast<ValidateLayout_t>(base + kb->validate);
     Real_GfxSetLayout = reinterpret_cast<GfxSetLayout_t>(base + kb->gfx);
     Real_MatchesLocal = reinterpret_cast<GetMatchesLocal_t>(base + kb->gate);
     DetourAttach(&reinterpret_cast<PVOID&>(Real_SendLayoutA), Hooked_SendLayoutA);
-    DetourAttach(&reinterpret_cast<PVOID&>(Real_WriteLayout), Hooked_WriteLayout);
     DetourAttach(&reinterpret_cast<PVOID&>(Real_Validate), Hooked_Validate);
     DetourAttach(&reinterpret_cast<PVOID&>(Real_GfxSetLayout), Hooked_GfxSetLayout);
     DetourAttach(&reinterpret_cast<PVOID&>(Real_MatchesLocal), Hooked_MatchesLocal);
     DetourAttach(&reinterpret_cast<PVOID&>(Real_SendLayoutB), Hooked_SendLayoutB);  // observe SendB (-> trampoline)
 #endif
     LONG err = DetourTransactionCommit();
-    Log(L"rdpedisp: channel hooks installed (build matched); commit=%ld fix=%d", err, g_fixEnabled);
+    Log(L"rdpedisp: channel hooks installed (build matched); commit=%ld fix=%d override=%d(%u%%)",
+        err, g_fixEnabled, g_overrideEnabled, g_overridePct);
     return true;
 }
 
@@ -451,9 +496,9 @@ void RemoveChannelHooks()
     DetourUpdateThread(GetCurrentThread());
     if (Real_OnDataReceived) DetourDetach(&reinterpret_cast<PVOID&>(Real_OnDataReceived), Hooked_OnDataReceived);
     if (Real_InitSelf)       DetourDetach(&reinterpret_cast<PVOID&>(Real_InitSelf), Hooked_InitSelf);
+    if (Real_WriteLayout)    DetourDetach(&reinterpret_cast<PVOID&>(Real_WriteLayout), Hooked_WriteLayout);
 #ifdef MSTSFENCE_DPI_DIAG
     if (Real_SendLayoutA)  DetourDetach(&reinterpret_cast<PVOID&>(Real_SendLayoutA), Hooked_SendLayoutA);
-    if (Real_WriteLayout)  DetourDetach(&reinterpret_cast<PVOID&>(Real_WriteLayout), Hooked_WriteLayout);
     if (Real_Validate)     DetourDetach(&reinterpret_cast<PVOID&>(Real_Validate), Hooked_Validate);
     if (Real_GfxSetLayout) DetourDetach(&reinterpret_cast<PVOID&>(Real_GfxSetLayout), Hooked_GfxSetLayout);
     if (Real_MatchesLocal) DetourDetach(&reinterpret_cast<PVOID&>(Real_MatchesLocal), Hooked_MatchesLocal);
@@ -484,14 +529,16 @@ void mstsfence::rdpedisp::OnAttach()
 {
     g_trace = GetEnvironmentVariableW(L"MSTSFENCE_TRACE", nullptr, 0) > 0;
     g_fixEnabled = mstsfence::DpiFixEnabled();
+    g_overrideEnabled = mstsfence::DpiOverrideEnabled();
+    g_overridePct = mstsfence::DpiOverridePct();
 
 #ifdef MSTSFENCE_DPI_DIAG
     InstallApiProbes();   // observe-only DPI reads; always hook mstscax too (we want the data)
 #else
-    if (!g_fixEnabled)
+    if (!g_fixEnabled && !g_overrideEnabled)
     {
-        Log(L"rdpedisp: idle (DpiFix off).");
-        return;  // nothing to hook when the fix is off and there's no diag to gather
+        Log(L"rdpedisp: idle (DpiFix + DpiOverride both off).");
+        return;  // nothing to hook
     }
 #endif
 

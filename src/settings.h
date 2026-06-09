@@ -5,11 +5,15 @@
 // what to do inside mstsc. Fence/DarkMode default ON when missing; DpiFix defaults OFF.
 namespace mstsfence
 {
-    bool FenceEnabled();     // clamp mstsc to the work area (taskbar fencing)
-    bool DarkModeEnabled();  // dark-style mstsc's UI
-    bool DpiFixEnabled();    // send the client's DPI to the host at connect (default OFF; hidden)
+    bool FenceEnabled();        // clamp mstsc to the work area (taskbar fencing)
+    bool DarkModeEnabled();     // dark-style mstsc's UI
+    bool DpiFixEnabled();       // send the client's DPI to the host at connect (default OFF; hidden)
+    bool DpiOverrideEnabled();  // force the host scale to a chosen % instead of matching the client
+    unsigned DpiOverridePct();  // the override %, clamped to 100..500 (default 100)
 
     void SetFenceEnabled(bool on);
     void SetDarkModeEnabled(bool on);
     void SetDpiFixEnabled(bool on);
+    void SetDpiOverrideEnabled(bool on);
+    void SetDpiOverridePct(unsigned pct);
 }

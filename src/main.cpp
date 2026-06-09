@@ -31,10 +31,13 @@
 #include <cstdio>
 #include <cstring>
 #include <cwchar>
+#include <commctrl.h>
 
 #include "version.h"
 #include "resource.h"
 #include "settings.h"
+
+#pragma comment(lib, "Comctl32.lib")
 
 // ---------------------------------------------------------------------------
 // shared helpers
@@ -55,82 +58,6 @@ static bool HookDllPath(wchar_t* out, size_t cap)
     }
     *(slash + 1) = L'\0';  // keep trailing backslash
     return wcscpy_s(out, cap, exe) == 0 && wcscat_s(out, cap, L"mstsfencehook.dll") == 0;
-}
-
-// ---------------------------------------------------------------------------
-// --diag : monitor rect dump (same data the hook manipulates)
-// ---------------------------------------------------------------------------
-static BOOL CALLBACK MonitorEnumProc(HMONITOR hMonitor, HDC, LPRECT, LPARAM lParam)
-{
-    int* index = reinterpret_cast<int*>(lParam);
-
-    MONITORINFOEXW mi{};
-    mi.cbSize = sizeof(mi);
-    if (!GetMonitorInfoW(hMonitor, &mi))
-    {
-        return TRUE;
-    }
-
-    const RECT& m = mi.rcMonitor;
-    const RECT& w = mi.rcWork;
-    const LONG monW = m.right - m.left, monH = m.bottom - m.top;
-    const LONG workW = w.right - w.left, workH = w.bottom - w.top;
-
-    wprintf(L"  [%d] %s%s\n", *index, mi.szDevice,
-            (mi.dwFlags & MONITORINFOF_PRIMARY) ? L"  (primary)" : L"");
-    wprintf(L"      rcMonitor : (%ld,%ld)-(%ld,%ld)  %ldx%ld\n",
-            m.left, m.top, m.right, m.bottom, monW, monH);
-    wprintf(L"      rcWork    : (%ld,%ld)-(%ld,%ld)  %ldx%ld\n",
-            w.left, w.top, w.right, w.bottom, workW, workH);
-    if (monW != workW || monH != workH)
-    {
-        wprintf(L"      taskbar reserves %ld px wide / %ld px tall\n", monW - workW, monH - workH);
-    }
-    else
-    {
-        wprintf(L"      work area == monitor (no taskbar reservation here)\n");
-    }
-
-    ++*index;
-    return TRUE;
-}
-
-// A GUI-subsystem exe has no console; attach to the parent's (or allocate one)
-// so --diag / --help can print.
-static void EnsureConsole()
-{
-    if (!AttachConsole(ATTACH_PARENT_PROCESS))
-    {
-        AllocConsole();
-    }
-    FILE* f = nullptr;
-    freopen_s(&f, "CONOUT$", "w", stdout);
-    freopen_s(&f, "CONOUT$", "w", stderr);
-}
-
-static int RunDiag()
-{
-    wprintf(L"Monitors as the system reports them:\n");
-    int index = 0;
-    EnumDisplayMonitors(nullptr, nullptr, MonitorEnumProc, reinterpret_cast<LPARAM>(&index));
-    if (index == 0)
-    {
-        wprintf(L"  (none enumerated)\n");
-    }
-    return 0;
-}
-
-static int RunHelp()
-{
-    wprintf(L"mstsfence v%hs\n", MSTSFENCE_VERSION_STRING);
-    wprintf(L"Keep mstsc's full-screen window (and session resolution) within the\n"
-            L"monitor work area so the host taskbar stays visible.\n\n");
-    wprintf(L"Usage:\n");
-    wprintf(L"  mstsfence            run in the tray; install the global hook; register at login\n");
-    wprintf(L"  mstsfence --diag     print each monitor's rcMonitor vs rcWork and exit\n");
-    wprintf(L"  mstsfence --help     this help\n\n");
-    wprintf(L"Set MSTSFENCE_TRACE=1 (in mstsc's environment) for the hook's diagnostic log.\n");
-    return 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -228,39 +155,57 @@ static void DarkenDialog(HWND hDlg)
     umbra::setDarkWndNotifySafe(hDlg, true);
 }
 
-// Settings dialog. Reads/writes HKCU\Software\mstsfence; the hook picks the values
-// up when a new mstsc session starts.
+// Settings dialog. Reads/writes HKCU\Software\mstsfence; the hook picks the values up when a
+// new mstsc session starts. 
 static INT_PTR CALLBACK SettingsDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM)
 {
     switch (msg)
     {
     case WM_INITDIALOG:
     {
+        SetForegroundWindow(hDlg);
+        SetActiveWindow(hDlg);
         CheckDlgButton(hDlg, IDC_SET_FENCE, mstsfence::FenceEnabled()    ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hDlg, IDC_SET_DARK,  mstsfence::DarkModeEnabled() ? BST_CHECKED : BST_UNCHECKED);
+
+        // Hidden DPI controls -- shown only when Shift is held as the dialog opens.
+        CheckDlgButton(hDlg, IDC_SET_DPIFIX,  mstsfence::DpiFixEnabled()      ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hDlg, IDC_SET_DPIOVER, mstsfence::DpiOverrideEnabled() ? BST_CHECKED : BST_UNCHECKED);
+        SetDlgItemInt(hDlg, IDC_SET_DPIPCT, mstsfence::DpiOverridePct(), FALSE);
+        SendDlgItemMessageW(hDlg, IDC_SET_DPIPCT, EM_SETLIMITTEXT, 3, 0);
+        EnableWindow(GetDlgItem(hDlg, IDC_SET_DPIPCT), mstsfence::DpiOverrideEnabled());
+
         DarkenDialog(hDlg);
-        const int checks[] = { IDC_SET_FENCE, IDC_SET_DARK };
-        for (int id : checks)
-        {
-            umbra::setDarkThemeExperimental(GetDlgItem(hDlg, id), L"Explorer");
-            umbra::setCheckboxOrRadioBtnCtrlSubclass(GetDlgItem(hDlg, id));
-        }
-        umbra::setDarkThemeExperimental(GetDlgItem(hDlg, IDOK), L"Explorer");
-        umbra::setDarkThemeExperimental(GetDlgItem(hDlg, IDCANCEL), L"Explorer");
         return TRUE;
     }
 
     case WM_COMMAND:
         switch (LOWORD(wParam))
         {
+        case IDC_SET_DPIOVER:  // the % edit is only usable when the override is on
+            {
+                EnableWindow(GetDlgItem(hDlg, IDC_SET_DPIPCT),
+                            IsDlgButtonChecked(hDlg, IDC_SET_DPIOVER) == BST_CHECKED);
+                return TRUE;
+            }
         case IDOK:
-            mstsfence::SetFenceEnabled(IsDlgButtonChecked(hDlg, IDC_SET_FENCE) == BST_CHECKED);
-            mstsfence::SetDarkModeEnabled(IsDlgButtonChecked(hDlg, IDC_SET_DARK) == BST_CHECKED);
-            EndDialog(hDlg, IDOK);
-            return TRUE;
+            {
+                mstsfence::SetFenceEnabled(IsDlgButtonChecked(hDlg, IDC_SET_FENCE) == BST_CHECKED);
+                mstsfence::SetDarkModeEnabled(IsDlgButtonChecked(hDlg, IDC_SET_DARK) == BST_CHECKED);
+                mstsfence::SetDpiFixEnabled(IsDlgButtonChecked(hDlg, IDC_SET_DPIFIX) == BST_CHECKED);
+                mstsfence::SetDpiOverrideEnabled(IsDlgButtonChecked(hDlg, IDC_SET_DPIOVER) == BST_CHECKED);
+                BOOL parsed = FALSE;
+                UINT pct = GetDlgItemInt(hDlg, IDC_SET_DPIPCT, &parsed, FALSE);
+                if (parsed)
+                    mstsfence::SetDpiOverridePct(pct);  // clamps to 100..500
+                EndDialog(hDlg, IDOK);
+                return TRUE;
+            }
         case IDCANCEL:
-            EndDialog(hDlg, IDCANCEL);
-            return TRUE;
+            {
+                EndDialog(hDlg, IDCANCEL);
+                return TRUE;
+            }
         }
         break;
     }
@@ -274,54 +219,74 @@ static void ShowSettings(HWND owner)
 
 static INT_PTR CALLBACK AboutDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
 {
+    static HICON hIcon = nullptr;
+
     switch (msg)
     {
-    case WM_INITDIALOG:
-    {
-        // Large icon (the 64px frame) for the dialog body; a small one for the title bar.
-        HICON hBig = static_cast<HICON>(LoadImageW(GetModuleHandleW(nullptr),
-            MAKEINTRESOURCEW(IDI_MSTSFENCE_ICON), IMAGE_ICON, 64, 64, LR_SHARED));
-        if (hBig)
-            SendDlgItemMessageW(hDlg, IDC_ABOUT_ICON, STM_SETICON, reinterpret_cast<WPARAM>(hBig), 0);
-        HICON hSmall = static_cast<HICON>(LoadImageW(GetModuleHandleW(nullptr),
-            MAKEINTRESOURCEW(IDI_MSTSFENCE_ICON), IMAGE_ICON,
-            GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_SHARED));
-        if (hSmall)
-            SendMessageW(hDlg, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(hSmall));
-
-        wchar_t ver[64];
-        swprintf_s(ver, ARRAYSIZE(ver), L"Version %hs", MSTSFENCE_VERSION_STRING);
-        SetDlgItemTextW(hDlg, IDC_ABOUT_NAME, L"mstsfence");
-        SetDlgItemTextW(hDlg, IDC_ABOUT_VERSION, ver);
-        SetDlgItemTextW(hDlg, IDC_ABOUT_COPYRIGHT, L"Copyright © 2026 Marton Anka");
-        SetDlgItemTextW(hDlg, IDC_ABOUT_LINK,
-            L"<a href=\"" GITHUB_URL L"\">github.com/martona/mstsfence</a>");
-        SetDlgItemTextW(hDlg, IDC_ABOUT_DETOURS, kDetoursNotice);
-
-        // Dark-style the dialog and its controls via umbra (initialized at startup).
-        DarkenDialog(hDlg);
-        umbra::setDarkThemeExperimental(GetDlgItem(hDlg, IDOK), L"Explorer");
-        return TRUE;
-    }
-
-    case WM_NOTIFY:
-    {
-        auto nmhdr = reinterpret_cast<LPNMHDR>(lParam);
-        if (nmhdr->idFrom == IDC_ABOUT_LINK && (nmhdr->code == NM_CLICK || nmhdr->code == NM_RETURN))
+        case WM_INITDIALOG:
         {
-            ShellExecuteW(hDlg, L"open", GITHUB_URL, nullptr, nullptr, SW_SHOWNORMAL);
+            SetForegroundWindow(hDlg);
+            SetActiveWindow(hDlg);
+            LoadIconWithScaleDown(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDI_MSTSFENCE_ICON), 256, 256, &hIcon);
+
+            wchar_t ver[64];
+            swprintf_s(ver, ARRAYSIZE(ver), L"Version %hs", MSTSFENCE_VERSION_STRING);
+            SetDlgItemTextW(hDlg, IDC_ABOUT_NAME, L"mstsfence");
+            SetDlgItemTextW(hDlg, IDC_ABOUT_VERSION, ver);
+            SetDlgItemTextW(hDlg, IDC_ABOUT_COPYRIGHT, L"Copyright © 2026 Marton Anka");
+            SetDlgItemTextW(hDlg, IDC_ABOUT_LINK,
+                L"<a href=\"" GITHUB_URL L"\">github.com/martona/mstsfence</a>");
+            SetDlgItemTextW(hDlg, IDC_ABOUT_DETOURS, kDetoursNotice);
+
+            // Dark-style the dialog and its controls via umbra (initialized at startup).
+            DarkenDialog(hDlg);
             return TRUE;
         }
-        break;
-    }
 
-    case WM_COMMAND:
-        if (LOWORD(wParam) == IDOK || LOWORD(wParam) == IDCANCEL)
+        case WM_NOTIFY:
         {
-            EndDialog(hDlg, 0);
+            auto nmhdr = reinterpret_cast<LPNMHDR>(lParam);
+            if (nmhdr->idFrom == IDC_ABOUT_LINK && (nmhdr->code == NM_CLICK || nmhdr->code == NM_RETURN))
+            {
+                ShellExecuteW(hDlg, L"open", GITHUB_URL, nullptr, nullptr, SW_SHOWNORMAL);
+                return TRUE;
+            }
+            break;
+        }
+
+        case WM_DRAWITEM:
+        {
+            auto pDraw = reinterpret_cast<LPDRAWITEMSTRUCT>(lParam);
+            if (pDraw->CtlID == IDC_ABOUT_ICON) 
+            {
+                int ctrlWidth = pDraw->rcItem.right - pDraw->rcItem.left;
+                int ctrlHeight = pDraw->rcItem.bottom - pDraw->rcItem.top;
+                int minDim = ctrlWidth < ctrlHeight ? ctrlWidth : ctrlHeight;
+                DrawIconEx(
+                    pDraw->hDC, 
+                    0, 0,
+                    hIcon,
+                    minDim, minDim,
+                    0,
+                    nullptr, 
+                    DI_NORMAL);
+                return (INT_PTR)TRUE;
+            }
+            break;
+        }
+        case WM_COMMAND:
+            if (LOWORD(wParam) == IDOK || LOWORD(wParam) == IDCANCEL)
+            {
+                EndDialog(hDlg, 0);
+                return TRUE;
+            }
+            break;
+        
+        case WM_DESTROY:
+        {
+            DestroyIcon(hIcon);
             return TRUE;
         }
-        break;
     }
     return FALSE;
 }
@@ -345,7 +310,8 @@ static void ShowContextMenu(HWND hwnd)
     AppendMenuW(menu, MF_STRING, ID_ABOUT, L"About…");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, ID_EXIT, L"Exit");
-
+    SetMenuDefaultItem(menu, ID_SETTINGS, FALSE);
+    
     SetForegroundWindow(hwnd);  // so the menu dismisses on click-away
     TrackPopupMenu(menu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd, nullptr);
     DestroyMenu(menu);
@@ -405,7 +371,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             ShowContextMenu(hwnd);
             break;
         case WM_LBUTTONDBLCLK:
-            ShowAbout(hwnd);
+            ShowSettings(hwnd);
             break;
         }
         return 0;
@@ -501,45 +467,5 @@ static int RunTray(HINSTANCE hinst)
 int WINAPI wWinMain(HINSTANCE hinst, HINSTANCE, LPWSTR, int)
 {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-    
-    int mode = 0;  // 0=tray, 1=diag, 2=help, -1=bad arg
-    int argc = 0;
-    LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
-    if (argv)
-    {
-        for (int i = 1; i < argc; ++i)
-        {
-            if (_wcsicmp(argv[i], L"--diag") == 0)
-            {
-                mode = 1;
-            }
-            else if (_wcsicmp(argv[i], L"--help") == 0 || _wcsicmp(argv[i], L"-h") == 0 ||
-                     _wcsicmp(argv[i], L"/?") == 0)
-            {
-                mode = 2;
-            }
-            else
-            {
-                mode = -1;
-            }
-            break;
-        }
-        LocalFree(argv);
-    }
-
-    switch (mode)
-    {
-    case 1:
-        EnsureConsole();
-        return RunDiag();
-    case 2:
-        EnsureConsole();
-        return RunHelp();
-    case -1:
-        EnsureConsole();
-        fwprintf(stderr, L"unknown argument (try --help)\n");
-        return 2;
-    default:
-        return RunTray(hinst);
-    }
+    return RunTray(hinst);
 }
