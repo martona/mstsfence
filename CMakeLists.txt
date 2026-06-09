@@ -175,7 +175,7 @@ target_compile_definitions(mstsfencehook PRIVATE
     WIN32 UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX
     _WIN32_WINNT=0x0A00 NTDDI_VERSION=0x0A000000)   # Win10+ for umbra's dark-mode APIs
 target_link_libraries(mstsfencehook PRIVATE
-    detours_imported umbra::umbra user32 advapi32 uxtheme dwmapi gdi32 comctl32)
+    detours_imported umbra::umbra user32 advapi32 uxtheme dwmapi gdi32 comctl32 shcore)
 if (MSVC)
     target_compile_options(mstsfencehook PRIVATE /utf-8 /W4)
 endif()

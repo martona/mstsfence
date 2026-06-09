@@ -1,0 +1,15 @@
+call sites targeting the monitor-layout functions:
+
+  2AAFAF  call -> WriteMonitorLayoutPdu                    in: RdpDisplayControlChannel::SendMonitorLayoutPdu
+  2AB1BE  call -> WriteMonitorLayoutPdu                    in: RdpDisplayControlChannel::SendMonitorLayoutPdu
+  2AB529  call -> ValidateDisplayControlMonitorLayout      in: RdpDisplayControlChannel::WriteMonitorLayoutPdu
+  2C14C0  call -> GetCurrentSystemMonitorLayout            in: RdpWinMonitorConfig::GetMonitorsInfo
+
+total: 4 call sites
+
+vtable/.rdata slots holding the virtual targets (imgbase=0x7FF811DE0000):
+  slot@6A0108 -> 2AB0A0 (SendMonitorLayoutPdu(this,count,arr))  near: RdpDisplayControlChannel::`vftable'
+  slot@6A0110 -> 2AA760 (SendMonitorLayoutPdu(this,u32,u32))  near: RdpDisplayControlChannel::`vftable'
+  slot@6A63A0 -> 3965C0 (get_RemoteMonitorLayoutMatchesLocal (the gate))  near: ATL::CComContainedObject<CMsTscAxWebControl>::`vftable'
+  slot@6A7578 -> 3965C0 (get_RemoteMonitorLayoutMatchesLocal (the gate))  near: ATL::CComObject<CMsTscAxWebControl>::`vftable'
+  slot@6A8778 -> 3965C0 (get_RemoteMonitorLayoutMatchesLocal (the gate))  near: ATL::CComObject<CMsTscAxStdControl>::`vftable'
