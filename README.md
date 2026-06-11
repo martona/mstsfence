@@ -99,7 +99,7 @@ To package an already-built Release directory as an MSIX:
 
 The packager stages the EXE and hook DLL, generates MSIX PNG assets from
 `resources/fence-icon.png`, builds `resources.pri`, and emits
-`build/msix/mstsfence-<version>-windows-<arch>.msix`. Omit `-NoSign` to sign the
+`build/msix/mstsfence-windows-<arch>.msix`. Omit `-NoSign` to sign the
 MSIX with the same Azure Trusted Signing environment variables used by the build
 script; if the EXE is already signed, the manifest Publisher is inferred from it.
 The package declares the restricted `unvirtualizedResources` capability so the
@@ -125,8 +125,8 @@ Or run **Release (manual)** from the Actions tab with an explicit version (tick
 carries, per architecture:
 
 - `mstsfence-windows-<arch>.zip` — the loose `mstsfence.exe` + `mstsfencehook.dll`.
-- `mstsfence-<version>-windows-<arch>.msix` — the signed full-trust MSIX package
-  (when Azure Trusted Signing is configured).
+- `mstsfence-windows-<arch>.msix` — the signed full-trust MSIX package (when
+  Azure Trusted Signing is configured).
 - `mstsfence-<version>-windows-<arch>-symbols.zip` — the matching `.pdb` symbols.
 
 Every push/PR to `master` also runs **Windows CI**, which builds both arches and

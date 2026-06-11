@@ -299,7 +299,7 @@ $priConfig = Join-Path $OutDir 'priconfig.xml'
 Invoke-NativeCommand -FilePath $makepri -Arguments @('createconfig', '/cf', $priConfig, '/dq', 'en-US', '/o')
 Invoke-NativeCommand -FilePath $makepri -Arguments @('new', '/pr', $layout, '/cf', $priConfig, '/mn', (Join-Path $layout 'AppxManifest.xml'), '/of', (Join-Path $layout 'resources.pri'), '/o')
 
-$msix = Join-Path $OutDir "mstsfence-$Version-windows-$Arch.msix"
+$msix = Join-Path $OutDir "mstsfence-windows-$Arch.msix"
 if (Test-Path $msix) {
     Remove-Item -LiteralPath $msix -Force
 }

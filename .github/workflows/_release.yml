@@ -189,7 +189,7 @@ jobs:
       - name: Verify MSIX signature
         if: ${{ vars.ARTIFACT_SIGNING_ENDPOINT != '' }}
         run: |
-          $msix = ".\build\msix\mstsfence-${{ inputs.version }}-windows-${{ matrix.arch }}.msix"
+          $msix = ".\build\msix\mstsfence-windows-${{ matrix.arch }}.msix"
           if (-not (Test-Path $msix)) {
             throw "Missing expected MSIX: $msix"
           }
@@ -225,7 +225,7 @@ jobs:
           Compress-Archive -Path ($pdbs | ForEach-Object { $_.FullName }) -DestinationPath $pdbZip
           Write-Host "Created $pdbZip with $($pdbs.Count) PDB(s)"
 
-          $msix = ".\build\msix\mstsfence-$ver-windows-$arch.msix"
+          $msix = ".\build\msix\mstsfence-windows-$arch.msix"
           if (Test-Path $msix) {
             Copy-Item $msix -Destination $stage
             Write-Host "Copied MSIX package: $msix"
