@@ -91,6 +91,23 @@ side). Signing uses the [`sign`](https://github.com/dotnet/sign) CLI with Azure
 Trusted Signing and runs only when `ARTIFACT_SIGNING_ENDPOINT`,
 `ARTIFACT_SIGNING_ACCOUNT`, and `ARTIFACT_SIGNING_CERTIFICATE_PROFILE` are all set.
 
+To package an already-built Release directory as an MSIX:
+
+```powershell
+./scripts/package_windows_msix.ps1 -NoSign
+```
+
+The packager stages the EXE and hook DLL, generates MSIX PNG assets from
+`resources/fence-icon.png`, builds `resources.pri`, and emits
+`build/msix/mstsfence-<version>-windows-<arch>.msix`. Omit `-NoSign` to sign the
+MSIX with the same Azure Trusted Signing environment variables used by the build
+script; if the EXE is already signed, the manifest Publisher is inferred from it.
+The package declares the restricted `unvirtualizedResources` capability so the
+existing HKCU autostart/settings writes land in the real registry, and packaged
+builds stage `mstsfencehook.dll` under `%APPDATA%\mstsfence` for `mstsc.exe` to
+load. The release workflow still ships the loose ZIP artifacts today; MSIX
+publishing is not wired into that flow yet.
+
 ## Releasing
 
 Releases are built by GitHub Actions (`.github/workflows/`), `amd64` + `arm64`.

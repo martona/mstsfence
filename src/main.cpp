@@ -21,17 +21,21 @@
 // Set MSTSFENCE_TRACE=1 in mstsc's environment to get the DLL's diagnostic log back
 // (%TEMP%\mstsfencehook.log); it is silent otherwise.
 
+#define _CRT_RAND_S
 #include <windows.h>
 
+#include <appmodel.h>
 #include <commctrl.h>
+#include <shlobj.h>
 #include <shellapi.h>
 
 #include <umbra.h>
 
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <cwchar>
-#include <commctrl.h>
+#include <string>
 
 #include "version.h"
 #include "resource.h"
@@ -43,22 +47,125 @@
 // ---------------------------------------------------------------------------
 // shared helpers
 // ---------------------------------------------------------------------------
-// Full path to mstsfencehook.dll next to this exe (independent of the CWD).
-static bool HookDllPath(wchar_t* out, size_t cap)
+static std::wstring ModulePath()
 {
-    wchar_t exe[MAX_PATH];
-    DWORD n = GetModuleFileNameW(nullptr, exe, MAX_PATH);
-    if (n == 0 || n >= MAX_PATH)
+    std::wstring path(MAX_PATH, L'\0');
+    for (;;)
     {
-        return false;
+        DWORD n = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
+        if (n == 0)
+            return {};
+        if (n < path.size())
+        {
+            path.resize(n);
+            return path;
+        }
+        path.resize(path.size() * 2);
     }
-    wchar_t* slash = wcsrchr(exe, L'\\');
-    if (!slash)
+}
+
+static std::wstring ModuleDir()
+{
+    std::wstring path = ModulePath();
+    size_t slash = path.find_last_of(L"\\/");
+    if (path.empty() || slash == std::wstring::npos)
+        return {};
+    return path.substr(0, slash);
+}
+
+static bool IsPackaged()
+{
+    UINT32 len = 0;
+    return GetCurrentPackageFullName(&len, nullptr) != APPMODEL_ERROR_NO_PACKAGE;
+}
+
+static std::wstring AppDataHookDir()
+{
+    PWSTR appData = nullptr;
+    std::wstring dir;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, KF_FLAG_CREATE, nullptr, &appData)) &&
+        appData)
     {
-        return false;
+        dir.assign(appData).append(L"\\mstsfence");
     }
-    *(slash + 1) = L'\0';  // keep trailing backslash
-    return wcscpy_s(out, cap, exe) == 0 && wcscat_s(out, cap, L"mstsfencehook.dll") == 0;
+    CoTaskMemFree(appData);
+    return dir;
+}
+
+// Best-effort sweep of old staged DLLs. Copies still mapped by mstsc remain locked
+// and are simply retried on a later run.
+static void SweepStagedHookDlls(const std::wstring& dir)
+{
+    if (dir.empty())
+        return;
+
+    WIN32_FIND_DATAW fd{};
+    std::wstring pattern = dir + L"\\mstsfencehook.*.dll";
+    HANDLE find = FindFirstFileW(pattern.c_str(), &fd);
+    if (find == INVALID_HANDLE_VALUE)
+        return;
+
+    do
+    {
+        if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0)
+        {
+            std::wstring path = dir + L"\\" + fd.cFileName;
+            DeleteFileW(path.c_str());
+        }
+    } while (FindNextFileW(find, &fd));
+
+    FindClose(find);
+}
+
+// Packaged mstsfence.exe lives under WindowsApps, which mstsc.exe cannot read.
+// Copy the hook DLL to real %APPDATA% with a fresh name so locked old copies do
+// not block updates.
+static std::wstring StageHookDll(const std::wstring& source)
+{
+    std::wstring dir = AppDataHookDir();
+    if (dir.empty())
+        return {};
+
+    int created = SHCreateDirectoryExW(nullptr, dir.c_str(), nullptr);
+    if (created != ERROR_SUCCESS && created != ERROR_ALREADY_EXISTS && created != ERROR_FILE_EXISTS)
+        return {};
+
+    SweepStagedHookDlls(dir);
+
+    unsigned int r = 0;
+    if (rand_s(&r) != 0)
+        r = GetTickCount() ^ (GetCurrentProcessId() << 16);
+
+    wchar_t name[64];
+    if (swprintf_s(name, ARRAYSIZE(name), L"mstsfencehook.%010u.dll", r) < 0)
+        return {};
+
+    std::wstring dest = dir + L"\\" + name;
+    if (!CopyFileW(source.c_str(), dest.c_str(), FALSE))
+    {
+        wchar_t msg[512];
+        swprintf_s(msg, ARRAYSIZE(msg), L"mstsfence: CopyFileW(%s) failed: %lu\n", dest.c_str(), GetLastError());
+        OutputDebugStringW(msg);
+        return {};
+    }
+
+    return dest;
+}
+
+// Full path to the hook DLL. Loose builds use the DLL next to the EXE; packaged
+// builds stage a readable copy into real %APPDATA%\mstsfence first.
+static std::wstring HookDllPath()
+{
+    std::wstring dir = ModuleDir();
+    if (dir.empty())
+        return {};
+
+    std::wstring source = dir + L"\\mstsfencehook.dll";
+    if (!IsPackaged())
+        return source;
+
+    std::wstring staged = StageHookDll(source);
+    return staged.empty() ? source : staged;
 }
 
 // ---------------------------------------------------------------------------
@@ -406,12 +513,11 @@ static void ShowContextMenu(HWND hwnd)
 
 static bool InstallHook()
 {
-    wchar_t dllPath[MAX_PATH];
-    if (!HookDllPath(dllPath, MAX_PATH))
-    {
+    std::wstring dllPath = HookDllPath();
+    if (dllPath.empty())
         return false;
-    }
-    g_dll = LoadLibraryW(dllPath);
+
+    g_dll = LoadLibraryW(dllPath.c_str());
     if (!g_dll)
     {
         return false;
@@ -419,10 +525,18 @@ static bool InstallHook()
     HOOKPROC proc = reinterpret_cast<HOOKPROC>(GetProcAddress(g_dll, "CBTProc"));
     if (!proc)
     {
+        FreeLibrary(g_dll);
+        g_dll = nullptr;
         return false;
     }
     g_hook = SetWindowsHookExW(WH_CBT, proc, g_dll, 0);  // 0 == all threads (global)
-    return g_hook != nullptr;
+    if (!g_hook)
+    {
+        FreeLibrary(g_dll);
+        g_dll = nullptr;
+        return false;
+    }
+    return true;
 }
 
 static void RemoveHook()
@@ -437,6 +551,8 @@ static void RemoveHook()
         FreeLibrary(g_dll);
         g_dll = nullptr;
     }
+    if (IsPackaged())
+        SweepStagedHookDlls(AppDataHookDir());
 }
 
 static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
@@ -534,7 +650,8 @@ static int RunTray(HINSTANCE hinst)
     {
         MessageBoxW(g_hwnd,
                     L"Could not install the WH_CBT hook -- mstsc windows won't be adjusted.\n"
-                    L"(Is mstsfencehook.dll next to mstsfence.exe?)",
+                    L"(Loose builds need mstsfencehook.dll next to mstsfence.exe; "
+                    L"packaged builds stage it under %APPDATA%\\mstsfence.)",
                     L"mstsfence", MB_OK | MB_ICONWARNING);
         // keep running so the tray is still usable / Exit can unregister
     }

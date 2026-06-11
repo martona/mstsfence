@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  MSIX manifest template for the packaged full-trust Win32 build of mstsfence.
+  @TOKENS@ are substituted by scripts/package_windows_msix.ps1.
+
+  EntryPoint="Windows.FullTrustApplication" + rescap:runFullTrust means the EXE
+  runs as a desktop process, not an AppContainer process. That is the only mode
+  that makes sense for the global hook controller and injected DLL.
+
+  unvirtualizedResources + the desktop6 virtualization switches keep the existing
+  HKCU\...\Run autostart/settings path visible outside the package, and let the
+  controller stage mstsfencehook.dll into real %APPDATA% so mstsc.exe can load it.
+
+  DISTRIBUTION CAVEAT: unvirtualizedResources is a restricted capability. A
+  sideload-signed package is fine for local testing; Store/App Installer paths
+  may require approval or additional validation.
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:desktop6="http://schemas.microsoft.com/appx/manifest/desktop/windows10/6"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap desktop6 rescap">
+
+  <Identity
+    Name="@IDENTITY_NAME@"
+    Publisher="@PUBLISHER@"
+    Version="@VERSION@"
+    ProcessorArchitecture="@ARCH@" />
+
+  <Properties>
+    <DisplayName>mstsfence</DisplayName>
+    <PublisherDisplayName>@PUBLISHER_DISPLAY_NAME@</PublisherDisplayName>
+    <Logo>Images\StoreLogo.png</Logo>
+    <desktop6:RegistryWriteVirtualization>disabled</desktop6:RegistryWriteVirtualization>
+    <desktop6:FileSystemWriteVirtualization>disabled</desktop6:FileSystemWriteVirtualization>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.18362.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+    <rescap:Capability Name="unvirtualizedResources" />
+  </Capabilities>
+
+  <Applications>
+    <Application Id="mstsfence" Executable="mstsfence.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="mstsfence"
+        Description="Keep full-screen Remote Desktop above the host taskbar."
+        BackgroundColor="#202020"
+        Square150x150Logo="Images\Square150x150Logo.png"
+        Square44x44Logo="Images\Square44x44Logo.png">
+        <uap:DefaultTile Square71x71Logo="Images\Square71x71Logo.png" />
+      </uap:VisualElements>
+    </Application>
+  </Applications>
+</Package>
