@@ -36,6 +36,7 @@
 #include "version.h"
 #include "resource.h"
 #include "settings.h"
+#include "mstscax_builds.h"
 
 #pragma comment(lib, "Comctl32.lib")
 
@@ -147,6 +148,87 @@ static const wchar_t kDetoursNotice[] =
     L"This product uses Microsoft Detours — Copyright (c) Microsoft Corporation, "
     L"licensed under the MIT License.";
 
+struct CvInfoRSDS { DWORD Sig; GUID Guid; DWORD Age; char Pdb[1]; };
+
+static bool ModulePdbGuid(HMODULE mod, GUID* out)
+{
+    BYTE* base = reinterpret_cast<BYTE*>(mod);
+    auto dos = reinterpret_cast<IMAGE_DOS_HEADER*>(base);
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE)
+        return false;
+    auto nt = reinterpret_cast<IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE)
+        return false;
+    const IMAGE_DATA_DIRECTORY& d = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG];
+    if (!d.VirtualAddress || d.Size < sizeof(IMAGE_DEBUG_DIRECTORY))
+        return false;
+
+    auto dbg = reinterpret_cast<IMAGE_DEBUG_DIRECTORY*>(base + d.VirtualAddress);
+    for (DWORD i = 0; i < d.Size / sizeof(IMAGE_DEBUG_DIRECTORY); ++i)
+    {
+        if (dbg[i].Type == IMAGE_DEBUG_TYPE_CODEVIEW && dbg[i].AddressOfRawData)
+        {
+            auto cv = reinterpret_cast<CvInfoRSDS*>(base + dbg[i].AddressOfRawData);
+            if (cv->Sig == 0x53445352)  // 'RSDS'
+            {
+                *out = cv->Guid;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+static bool LocalMstscaxPdbGuid(GUID* out)
+{
+    wchar_t path[MAX_PATH];
+    UINT n = GetSystemDirectoryW(path, ARRAYSIZE(path));
+    if (n == 0 || n >= ARRAYSIZE(path) || wcscat_s(path, L"\\mstscax.dll") != 0)
+        return false;
+
+    HMODULE mod = LoadLibraryExW(path, nullptr, DONT_RESOLVE_DLL_REFERENCES);
+    if (!mod)
+        return false;
+    bool ok = ModulePdbGuid(mod, out);
+    FreeLibrary(mod);
+    return ok;
+}
+
+static void RvaStatusText(wchar_t* out, size_t cap)
+{
+    GUID guid{};
+    if (!LocalMstscaxPdbGuid(&guid))
+    {
+        wcscpy_s(out, cap, L"RVA: mstscax build unknown");
+        return;
+    }
+
+    if (const wchar_t* build = mstsfence::rdpedisp::KnownMstscaxBuildName(guid))
+        swprintf_s(out, cap, L"RVA: supported (%s)", build);
+    else
+        swprintf_s(out, cap, L"RVA: unsupported (PDB %08lX)", guid.Data1);
+}
+
+static HFONT g_settingsStatusFont = nullptr;
+
+static HFONT SettingsStatusFont(HWND hwnd)
+{
+    if (g_settingsStatusFont)
+        return g_settingsStatusFont;
+
+    HDC hdc = GetDC(hwnd);
+    const int height = hdc ? -MulDiv(7, GetDeviceCaps(hdc, LOGPIXELSY), 72) : -9;
+    if (hdc)
+        ReleaseDC(hwnd, hdc);
+
+    LOGFONTW lf{};
+    lf.lfHeight = height;
+    lf.lfWeight = FW_NORMAL;
+    wcscpy_s(lf.lfFaceName, L"Segoe UI");
+    g_settingsStatusFont = CreateFontIndirectW(&lf);
+    return g_settingsStatusFont;
+}
+
 // Common dark-styling for our own modal dialogs (About / Settings).
 static void DarkenDialog(HWND hDlg)
 {
@@ -173,6 +255,12 @@ static INT_PTR CALLBACK SettingsDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPAR
         SetDlgItemInt(hDlg, IDC_SET_DPIPCT, mstsfence::DpiOverridePct(), FALSE);
         SendDlgItemMessageW(hDlg, IDC_SET_DPIPCT, EM_SETLIMITTEXT, 3, 0);
         EnableWindow(GetDlgItem(hDlg, IDC_SET_DPIPCT), mstsfence::DpiOverrideEnabled());
+
+        wchar_t rvaStatus[96];
+        RvaStatusText(rvaStatus, ARRAYSIZE(rvaStatus));
+        SetDlgItemTextW(hDlg, IDC_SET_RVA_STATUS, rvaStatus);
+        if (HFONT font = SettingsStatusFont(hDlg))
+            SendDlgItemMessageW(hDlg, IDC_SET_RVA_STATUS, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
 
         DarkenDialog(hDlg);
         return TRUE;

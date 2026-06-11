@@ -19,3 +19,4 @@
 #define IDC_SET_DPIOVER      213
 #define IDC_SET_DPIPCT       214
 #define IDC_SET_DPIPCT_LBL   215
+#define IDC_SET_RVA_STATUS   216

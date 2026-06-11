@@ -23,6 +23,23 @@ dialogs.
 NOTE: Relying on `GetMonitorInfo` alone didn't prove to be sufficient so we also hook 
 `EnumDisplayMonitors`, `GetSystemMetrics`, and `EnumDisplaySettingsW`.
 
+### DPI / host scaling override
+
+`mstsfence` can also ask the remote host to use a chosen display scaling
+percentage. When **DPI override** is enabled, the hook rewrites the RDP monitor
+scale data in two places:
+
+- connect-time `CS_MONITOR` / `CS_MONITOR_EX` data, including the single-monitor
+  case where stock `mstsc` normally sends only `CS_CORE` dimensions and no monitor
+  attributes;
+- later dynamic-display `DISPLAYCONTROL_MONITOR_LAYOUT` PDUs, so reconnects,
+  resizes, and display-control traffic keep carrying the selected scale.
+
+This part is version-dependent: it hooks private `mstscax.dll` functions by RVA,
+so it only runs on builds whose PDB GUID is known. The Settings dialog shows a
+small **RVA** status readout so you can quickly tell whether the installed
+`mstscax.dll` is supported.
+
 ### Getting the hook into mstsc
 
 We don't control how `mstsc` starts - `.rdp` files, taskbar jump lists, and
@@ -36,7 +53,7 @@ The DLL filters by exe name, so outside `mstsc` it loads and does nothing.
 | Binary          | Role |
 |-----------------|------|
 | `mstsfence.exe`     | Tray controller. Installs the global `WH_CBT` hook, and registers itself to run at login. |
-| `mstsfencehook.dll` | Injected hook. Inert except in `mstsc.exe`, where it Detours `GetMonitorInfo` to collapse `rcMonitor` → `rcWork`. |
+| `mstsfencehook.dll` | Injected hook. Inert except in `mstsc.exe`, where it clamps monitor APIs to the work area and, when enabled, rewrites RDP monitor DPI data. |
 
 ## Usage
 
@@ -45,11 +62,14 @@ registers itself to run at login. Then launch `mstsc` any way you like (`.rdp`,
 jump list, Start menu) and go full-screen; it sizes to the work area.
 
 - **Tray menu** (right-click): *Settings* / *About* / *Exit*. **Settings** (stored
-  in `HKCU\Software\mstsfence`) has two toggles — fence mstsc to the work area, and
-  dark-mode mstsc — both **on by default**; they take effect for mstsc sessions
-  started afterward. **Exit** removes the hook and unregisters autostart; a
-  close/logoff leaves autostart in place so it returns next login. The icon
-  re-appears automatically if Explorer restarts.
+  in `HKCU\Software\mstsfence`) has toggles for fencing mstsc to the work area
+  and dark-mode mstsc — both **on by default** — plus an optional DPI override
+  percentage for the remote host. Changes take effect for mstsc sessions started
+  afterward. The small RVA readout in the lower-right of Settings reports whether
+  the installed `mstscax.dll` build matches the private offsets needed by the DPI
+  override. **Exit** removes the hook and unregisters autostart; a close/logoff
+  leaves autostart in place so it returns next login. The icon re-appears
+  automatically if Explorer restarts.
 
 An elevated `mstsc` needs an elevated `mstsfence` (a hook can't inject into a
 higher-integrity process). Set `MSTSFENCE_TRACE=1` in mstsc's environment to get the
@@ -108,6 +128,10 @@ Known limitations / later work:
 - **Multi-monitor:** `GetSystemMetrics`/`EnumDisplaySettingsW` clamp to the
   **primary** monitor's work area (single-monitor first cut); per-device mapping
   is TODO. (`GetMonitorInfo`/`EnumDisplayMonitors` are already per-monitor.)
+- **DPI override build coverage:** the override depends on private `mstscax.dll`
+  RVAs and is therefore gated by known PDB GUIDs. Unsupported builds safely leave
+  the DPI path alone; check the Settings dialog's RVA readout if scaling does not
+  change.
 - **Scope:** the clamp applies to every caller inside `mstsc`, not just the
   session window — intentionally left blunt; it works.
 - **Injection resilience:** won't apply if `mstsc` ever runs with

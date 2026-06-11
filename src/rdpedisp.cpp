@@ -21,6 +21,7 @@
 
 #include "rdpedisp.h"
 #include "settings.h"
+#include "mstscax_builds.h"
 
 namespace
 {
@@ -151,7 +152,7 @@ struct KnownBuild
 };
 const KnownBuild kKnownBuilds[] = {
     // mstscax.dll PDB 6D429A36 (ships in 26100.8246 / .8328 / .8457 -- same binary).
-    { { 0x6D429A36, 0x0C7A, 0xB9A0, { 0xA2, 0xBD, 0x12, 0x24, 0x07, 0xB8, 0xA7, 0x52 } },
+    { mstsfence::rdpedisp::kMstscaxPdb_6D429A36,
       0x2AB2D4, 0x13EE24, 0x15F5B0, 0x2AB0A0, 0x2A8630, 0x289D18, 0x3965C0 },
 };
 
