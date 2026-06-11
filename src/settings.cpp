@@ -62,6 +62,12 @@ namespace mstsfence
         DWORD v = ReadDword(L"DpiNudge", 0);   // 0 = off; cap at 64 px so a fat-fingered value can't break the connect
         return v > 64 ? 64u : static_cast<unsigned>(v);
     }
+    unsigned DpiInjectScale()
+    {
+        DWORD v = ReadDword(L"DpiInjectScale", 0);   // 0 = off; else a DesktopScaleFactor clamped 100..500
+        if (v == 0) return 0u;
+        return v < 100 ? 100u : (v > 500 ? 500u : static_cast<unsigned>(v));
+    }
 
     void SetFenceEnabled(bool on)    { WriteFlag(L"Fence", on); }
     void SetDarkModeEnabled(bool on) { WriteFlag(L"DarkMode", on); }
@@ -76,5 +82,10 @@ namespace mstsfence
     {
         if (px > 64) px = 64;
         WriteDword(L"DpiNudge", px);
+    }
+    void SetDpiInjectScale(unsigned scale)
+    {
+        if (scale != 0 && scale < 100) scale = 100; else if (scale > 500) scale = 500;
+        WriteDword(L"DpiInjectScale", scale);
     }
 }
