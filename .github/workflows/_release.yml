@@ -163,6 +163,42 @@ jobs:
               Write-Host "[+] $f signed by: $($sig.SignerCertificate.Subject)"
           }
 
+      - name: Package MSIX
+        if: ${{ vars.ARTIFACT_SIGNING_ENDPOINT != '' }}
+        run: |
+          .\scripts\package_windows_msix.ps1 `
+            -Arch "${{ matrix.arch }}" `
+            -Version "${{ inputs.version }}" `
+            -BuildDir ".\build\windows-release" `
+            -OutDir ".\build\msix" `
+            -NoSign
+
+      - name: Sign MSIX
+        if: ${{ vars.ARTIFACT_SIGNING_ENDPOINT != '' }}
+        uses: azure/trusted-signing-action@v0
+        with:
+          endpoint: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
+          trusted-signing-account-name: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.ARTIFACT_SIGNING_CERTIFICATE_PROFILE }}
+          files-folder: ${{ github.workspace }}\build\msix
+          files-folder-filter: msix
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Verify MSIX signature
+        if: ${{ vars.ARTIFACT_SIGNING_ENDPOINT != '' }}
+        run: |
+          $msix = ".\build\msix\mstsfence-${{ inputs.version }}-windows-${{ matrix.arch }}.msix"
+          if (-not (Test-Path $msix)) {
+            throw "Missing expected MSIX: $msix"
+          }
+          $sig = Get-AuthenticodeSignature $msix
+          if ($sig.Status -ne 'Valid') {
+            throw "Signature on $msix is not Valid: $($sig.Status) — $($sig.StatusMessage)"
+          }
+          Write-Host "[+] $msix signed by: $($sig.SignerCertificate.Subject)"
+
       - name: Package artifacts
         run: |
           $ver = "${{ inputs.version }}"
@@ -188,6 +224,15 @@ jobs:
           $pdbZip = Join-Path $stage "mstsfence-$ver-windows-$arch-symbols.zip"
           Compress-Archive -Path ($pdbs | ForEach-Object { $_.FullName }) -DestinationPath $pdbZip
           Write-Host "Created $pdbZip with $($pdbs.Count) PDB(s)"
+
+          $msix = ".\build\msix\mstsfence-$ver-windows-$arch.msix"
+          if (Test-Path $msix) {
+            Copy-Item $msix -Destination $stage
+            Write-Host "Copied MSIX package: $msix"
+          }
+          else {
+            Write-Host "MSIX package not present; skipping (Trusted Signing is not configured)."
+          }
 
           Get-ChildItem $stage | Format-Table Name, Length
 

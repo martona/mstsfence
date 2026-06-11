@@ -105,8 +105,8 @@ script; if the EXE is already signed, the manifest Publisher is inferred from it
 The package declares the restricted `unvirtualizedResources` capability so the
 existing HKCU autostart/settings writes land in the real registry, and packaged
 builds stage `mstsfencehook.dll` under `%APPDATA%\mstsfence` for `mstsc.exe` to
-load. The release workflow still ships the loose ZIP artifacts today; MSIX
-publishing is not wired into that flow yet.
+load. The release workflow builds and signs MSIX packages when Azure Trusted
+Signing is configured.
 
 ## Releasing
 
@@ -125,6 +125,8 @@ Or run **Release (manual)** from the Actions tab with an explicit version (tick
 carries, per architecture:
 
 - `mstsfence-windows-<arch>.zip` — the loose `mstsfence.exe` + `mstsfencehook.dll`.
+- `mstsfence-<version>-windows-<arch>.msix` — the signed full-trust MSIX package
+  (when Azure Trusted Signing is configured).
 - `mstsfence-<version>-windows-<arch>-symbols.zip` — the matching `.pdb` symbols.
 
 Every push/PR to `master` also runs **Windows CI**, which builds both arches and
