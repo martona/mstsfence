@@ -104,6 +104,17 @@ GetMonData_t    Real_GetMonData     = nullptr;  // connect-time CS_MONITOR/CS_MO
 OnInitConn_t    Real_OnInit         = nullptr;  // connect-time CS_CORE builder
 HMODULE(WINAPI* Real_LoadLibraryExW)(LPCWSTR, HANDLE, DWORD) = LoadLibraryExW;
 
+void RefreshDpiOverrideSettings()
+{
+    const bool enabled = mstsfence::DpiOverrideEnabled();
+    const unsigned pct = mstsfence::DpiOverridePct();
+    if (enabled != g_overrideEnabled || pct != g_overridePct)
+        Log(L"rdpedisp: DPI override settings refreshed: %d(%u%%) -> %d(%u%%)",
+            g_overrideEnabled, g_overridePct, enabled, pct);
+    g_overrideEnabled = enabled;
+    g_overridePct = pct;
+}
+
 // ---------------------------------------------------------------------------
 // build identity -- the override only runs on an mstscax whose PDB GUID we recognise, so
 // the hard-coded RVAs are guaranteed correct for that binary.
@@ -647,34 +658,17 @@ bool InstallChannelHooks()
 
     BYTE* base = reinterpret_cast<BYTE*>(mod);
 
-    // The serializer is only hooked when the override is on (or in a diag build to observe).
-#ifdef MSTSFENCE_DPI_DIAG
-    bool wantWrite = true;
-#else
-    bool wantWrite = g_overrideEnabled;
-#endif
-
     DetourTransactionBegin();
     DetourUpdateThread(GetCurrentThread());
-    if (wantWrite)
-    {
-        Real_WriteLayout = reinterpret_cast<SendLayoutArr_t>(base + kb->write);
-        DetourAttach(&reinterpret_cast<PVOID&>(Real_WriteLayout), Hooked_WriteLayout);
-    }
-    // In a diag build, install the connect-time hooks unconditionally so they can observe
-    // CS_MONITOR / CS_MONITOR_EX even when the override is off.
-#ifdef MSTSFENCE_DPI_DIAG
-    const bool wantConnect = true;
-#else
-    const bool wantConnect = g_overrideEnabled;
-#endif
-    if (wantConnect)
-    {
-        Real_OnInit = reinterpret_cast<OnInitConn_t>(base + kb->onInit);
-        DetourAttach(&reinterpret_cast<PVOID&>(Real_OnInit), Hooked_OnInit);
-        Real_GetMonData = reinterpret_cast<GetMonData_t>(base + kb->getMonData);
-        DetourAttach(&reinterpret_cast<PVOID&>(Real_GetMonData), Hooked_GetMonData);
-    }
+    // Always install the DPI hook points for supported mstscax builds. The hook bodies
+    // re-read settings and no-op unless DpiOverride is enabled, so changing Settings
+    // takes effect at the next connect/display-control boundary without restarting mstsc.
+    Real_WriteLayout = reinterpret_cast<SendLayoutArr_t>(base + kb->write);
+    DetourAttach(&reinterpret_cast<PVOID&>(Real_WriteLayout), Hooked_WriteLayout);
+    Real_OnInit = reinterpret_cast<OnInitConn_t>(base + kb->onInit);
+    DetourAttach(&reinterpret_cast<PVOID&>(Real_OnInit), Hooked_OnInit);
+    Real_GetMonData = reinterpret_cast<GetMonData_t>(base + kb->getMonData);
+    DetourAttach(&reinterpret_cast<PVOID&>(Real_GetMonData), Hooked_GetMonData);
 #ifdef MSTSFENCE_DPI_DIAG
     Real_SendLayoutA  = reinterpret_cast<SendLayoutArr_t>(base + kb->sendA);
     Real_Validate     = reinterpret_cast<ValidateLayout_t>(base + kb->validate);
@@ -686,8 +680,8 @@ bool InstallChannelHooks()
     DetourAttach(&reinterpret_cast<PVOID&>(Real_MatchesLocal), Hooked_MatchesLocal);
 #endif
     LONG err = DetourTransactionCommit();
-    Log(L"rdpedisp: channel hooks installed (build matched); commit=%ld override=%d(%u%%)%s",
-        err, g_overrideEnabled, g_overridePct, Real_OnInit ? L" (connect armed)" : L"");
+    Log(L"rdpedisp: channel hooks installed (build matched); commit=%ld override=%d(%u%%)",
+        err, g_overrideEnabled, g_overridePct);
     return true;
 }
 
@@ -730,17 +724,10 @@ LONG g_loadHook = 0;
 void mstsfence::rdpedisp::OnAttach()
 {
     g_trace = GetEnvironmentVariableW(L"MSTSFENCE_TRACE", nullptr, 0) > 0;
-    g_overrideEnabled = mstsfence::DpiOverrideEnabled();
-    g_overridePct = mstsfence::DpiOverridePct();
+    RefreshDpiOverrideSettings();
 
 #ifdef MSTSFENCE_DPI_DIAG
     InstallApiProbes();   // observe-only DPI reads; always hook mstscax too (we want the data)
-#else
-    if (!g_overrideEnabled)
-    {
-        Log(L"rdpedisp: idle (DpiOverride off).");
-        return;  // nothing to hook
-    }
 #endif
 
     // Hook LoadLibraryExW so we catch mstscax whenever it loads, then immediately cover the
