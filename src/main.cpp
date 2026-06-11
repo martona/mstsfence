@@ -168,8 +168,7 @@ static INT_PTR CALLBACK SettingsDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPAR
         CheckDlgButton(hDlg, IDC_SET_FENCE, mstsfence::FenceEnabled()    ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hDlg, IDC_SET_DARK,  mstsfence::DarkModeEnabled() ? BST_CHECKED : BST_UNCHECKED);
 
-        // Hidden DPI controls -- shown only when Shift is held as the dialog opens.
-        CheckDlgButton(hDlg, IDC_SET_DPIFIX,  mstsfence::DpiFixEnabled()      ? BST_CHECKED : BST_UNCHECKED);
+        // DPI override controls.
         CheckDlgButton(hDlg, IDC_SET_DPIOVER, mstsfence::DpiOverrideEnabled() ? BST_CHECKED : BST_UNCHECKED);
         SetDlgItemInt(hDlg, IDC_SET_DPIPCT, mstsfence::DpiOverridePct(), FALSE);
         SendDlgItemMessageW(hDlg, IDC_SET_DPIPCT, EM_SETLIMITTEXT, 3, 0);
@@ -192,7 +191,6 @@ static INT_PTR CALLBACK SettingsDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPAR
             {
                 mstsfence::SetFenceEnabled(IsDlgButtonChecked(hDlg, IDC_SET_FENCE) == BST_CHECKED);
                 mstsfence::SetDarkModeEnabled(IsDlgButtonChecked(hDlg, IDC_SET_DARK) == BST_CHECKED);
-                mstsfence::SetDpiFixEnabled(IsDlgButtonChecked(hDlg, IDC_SET_DPIFIX) == BST_CHECKED);
                 mstsfence::SetDpiOverrideEnabled(IsDlgButtonChecked(hDlg, IDC_SET_DPIOVER) == BST_CHECKED);
                 BOOL parsed = FALSE;
                 UINT pct = GetDlgItemInt(hDlg, IDC_SET_DPIPCT, &parsed, FALSE);

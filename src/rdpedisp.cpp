@@ -1,7 +1,7 @@
-// rdpedisp.cpp -- see rdpedisp.h. The connect-time DPI fix and the optional host-scale
-// override, plus (behind MSTSFENCE_DPI_DIAG) the observe-hooks and DPI API probes that
-// reverse-engineered it. Self-contained: its own logger, its own mstscax resolution;
-// hook.cpp just calls OnAttach()/OnDetach().
+// rdpedisp.cpp -- see rdpedisp.h. The connect-time host-scale override plus
+// (behind MSTSFENCE_DPI_DIAG) the observe-hooks and DPI API probes that
+// reverse-engineered it. Self-contained: its own logger, its own mstscax
+// resolution; hook.cpp just calls OnAttach()/OnDetach().
 
 #include <windows.h>
 #include <shellscalingapi.h>   // GetDpiForMonitor / DEVICE_SCALE_FACTOR (only used by the diag probes)
@@ -83,23 +83,13 @@ void Log(const wchar_t* fmt, ...)
 // ---------------------------------------------------------------------------
 // state
 // ---------------------------------------------------------------------------
-bool g_fixEnabled = false;       // HKCU\Software\mstsfence\DpiFix (default off): force the send at connect
 bool g_overrideEnabled = false;  // HKCU\Software\mstsfence\DpiOverride: rewrite the host scale to a chosen %
 unsigned g_overridePct = 100;    // HKCU\Software\mstsfence\DpiOverridePct: 100..500
-unsigned g_nudgePx = 0;          // HKCU\Software\mstsfence\DpiNudge: shave N px off the advertised primary
-                                 // height at connect to force the host to (re)open display control (0 = off)
-unsigned g_injectScale = 0;      // HKCU\Software\mstsfence\DpiInjectScale: synthesize a CS_MONITOR_EX with
-                                 // this DesktopScaleFactor at connect (single-monitor) -- experiment (0 = off)
-LONG g_connectW = 0;             // desktop dims captured from OnInitiateConnection (CS_CORE), for the inject
+LONG g_connectW = 0;             // desktop dims captured from OnInitiateConnection (CS_CORE), for connect spoofing
 LONG g_connectH = 0;
 LONG g_layoutInstalled = 0;      // channel hooks installed (once mstscax is in)
-LONG g_forcedSend = 0;           // force-send latch -- re-armed per connection by InitSelf
-BOOL g_fakeLayout = false;       // force flap by sending a fake and the correct layout
-void* volatile g_displayChannel = nullptr;  // captured channel 'this' (diag/legacy; fix uses OnData+8)
 
-using SendLayoutWH_t  = int (*)(void* thisptr, unsigned int a, unsigned int b);     // SendMonitorLayoutPdu(this,u32,u32)
 using SendLayoutArr_t = int (*)(void* thisptr, unsigned int count, void* monitors); // Write / Send(array)
-using ChannelFn3_t    = int (*)(void* thisptr, void* a2, void* a3);                 // OnDataReceived / InitializeSelf
 // CNC::NC_GetMONITORData(this, csMonitorHdr, monitorDefArray, +7 more) -- the connect-time CS_MONITOR
 // builder. 10 args (rcx,rdx,r8,r9 + 6 on the stack); the full signature must match so the trampoline
 // gets every arg. We only read arg2 (CS_MONITOR header) and arg3 (the DEF array).
@@ -108,17 +98,14 @@ using GetMonData_t    = int (*)(void*, void*, void*, void*, void*, void*, void*,
 // (r8/r9 are clobbered before any read, no stack args), so a 4-arg pass-through trampoline is safe.
 using OnInitConn_t    = int (*)(void*, void*, void*, void*);
 
-SendLayoutWH_t  Real_SendLayoutB    = nullptr;  // the call the dance makes; we invoke its address directly
 SendLayoutArr_t Real_WriteLayout    = nullptr;  // the serializer every send funnels through (override point)
-ChannelFn3_t    Real_OnDataReceived = nullptr;
-ChannelFn3_t    Real_InitSelf       = nullptr;
-GetMonData_t    Real_GetMonData     = nullptr;  // connect-time CS_MONITOR builder (multimon nudge)
-OnInitConn_t    Real_OnInit         = nullptr;  // connect-time CS_CORE builder (the primary nudge)
+GetMonData_t    Real_GetMonData     = nullptr;  // connect-time CS_MONITOR/CS_MONITOR_EX builder
+OnInitConn_t    Real_OnInit         = nullptr;  // connect-time CS_CORE builder
 HMODULE(WINAPI* Real_LoadLibraryExW)(LPCWSTR, HANDLE, DWORD) = LoadLibraryExW;
 
 // ---------------------------------------------------------------------------
-// build identity -- the fix/override only run on an mstscax whose PDB GUID we recognise, so
-// the hard-coded RVAs (and the +8 'this' adjustment) are guaranteed correct for that binary.
+// build identity -- the override only runs on an mstscax whose PDB GUID we recognise, so
+// the hard-coded RVAs are guaranteed correct for that binary.
 // Unknown build -> safe no-op. Add a row (and confirm the offsets) for each new GUID.
 // ---------------------------------------------------------------------------
 struct CvInfoRSDS { DWORD Sig; GUID Guid; DWORD Age; char Pdb[1]; };
@@ -154,12 +141,9 @@ bool ModulePdbGuid(HMODULE mod, GUID* out)
 struct KnownBuild
 {
     GUID  guid;
-    DWORD sendB;       // SendMonitorLayoutPdu(this,u32,u32)      -- the fix calls this
-    DWORD onData;      // RdpDisplayControlChannel::OnDataReceived -- the fix hooks this (trigger)
-    DWORD initSelf;    // RdpDisplayControlChannel::InitializeSelf -- the fix hooks this (re-arm)
     DWORD write;       // WriteMonitorLayoutPdu(this,count,monitors) -- the override hooks this
-    DWORD onInit;      // CoreFSM::OnInitiateConnection -- builds CS_CORE; the nudge shaves desktopHeight here
-    DWORD getMonData;  // CNC::NC_GetMONITORData -- builds CS_MONITOR (multimon only); nudge shaves it too
+    DWORD onInit;      // CoreFSM::OnInitiateConnection -- builds CS_CORE; we capture desktopWidth/desktopHeight
+    DWORD getMonData;  // CNC::NC_GetMONITORData -- builds CS_MONITOR / CS_MONITOR_EX
     DWORD sendA;       // SendMonitorLayoutPdu(this,count,monitors)        ] diag
     DWORD validate;    // ValidateDisplayControlMonitorLayout(count,...)   ] observe
     DWORD gfx;         // RdpGfxClientChannel::SetMonitorLayout(this,...)   ] hooks
@@ -167,16 +151,60 @@ struct KnownBuild
 };
 const KnownBuild kKnownBuilds[] = {
     // mstscax.dll PDB 6D429A36 (ships in 26100.8246 / .8328 / .8457 -- same binary).
-    // For this binary the send 'this' is OnDataReceived's 'this' + 8.
     { { 0x6D429A36, 0x0C7A, 0xB9A0, { 0xA2, 0xBD, 0x12, 0x24, 0x07, 0xB8, 0xA7, 0x52 } },
-      0x2AA760, 0x2A9E90, 0x2A979C, 0x2AB2D4, 0x13EE24, 0x15F5B0,
-      0x2AB0A0, 0x2A8630, 0x289D18, 0x3965C0 },
+      0x2AB2D4, 0x13EE24, 0x15F5B0, 0x2AB0A0, 0x2A8630, 0x289D18, 0x3965C0 },
 };
 
 // ---------------------------------------------------------------------------
 // the layout struct + the optional host-scale override (always compiled)
 // ---------------------------------------------------------------------------
 #pragma pack(push, 1)
+typedef struct
+{
+    UINT32 physicalWidth;
+    UINT32 physicalHeight;
+    UINT32 orientation;
+    UINT32 desktopScaleFactor;
+    UINT32 deviceScaleFactor;
+} MONITOR_ATTRIBUTES;
+
+typedef struct
+{
+    INT32 x;
+    INT32 y;
+    INT32 width;
+    INT32 height;
+    UINT32 is_primary;
+    UINT32 orig_screen;
+    MONITOR_ATTRIBUTES attributes;
+} rdpMonitor;
+
+struct TS_MONITOR_DEF
+{
+    INT32 left;
+    INT32 top;
+    INT32 right;   // inclusive
+    INT32 bottom;  // inclusive
+    UINT32 flags;
+};
+
+struct CS_MONITOR_HEADER
+{
+    WORD type;
+    WORD length;
+    UINT32 flags;
+    UINT32 monitorCount;
+};
+
+struct CS_MONITOR_EX_HEADER
+{
+    WORD type;
+    WORD length;
+    UINT32 flags;
+    UINT32 monitorAttributeSize;
+    UINT32 monitorCount;
+};
+
 struct DCML  // DISPLAYCONTROL_MONITOR_LAYOUT, 40 bytes; offsets confirmed from the validator disasm.
              // Flags: bit0 = DISPLAYCONTROL_MONITOR_PRIMARY (the only documented one; single monitor =>
              // always 1); bit1 = skip this monitor in the adjacency/overlap check (mstsc-internal, undoc).
@@ -186,7 +214,17 @@ struct DCML  // DISPLAYCONTROL_MONITOR_LAYOUT, 40 bytes; offsets confirmed from 
     DWORD DesktopScaleFactor; DWORD DeviceScaleFactor;
 };
 #pragma pack(pop)
+static_assert(sizeof(MONITOR_ATTRIBUTES) == 20, "MONITOR_ATTRIBUTES must be 20 bytes");
+static_assert(sizeof(rdpMonitor) == 44, "rdpMonitor must be 44 bytes");
+static_assert(sizeof(TS_MONITOR_DEF) == 20, "TS_MONITOR_DEF must be 20 bytes");
+static_assert(sizeof(CS_MONITOR_HEADER) == 12, "CS_MONITOR_HEADER must be 12 bytes");
+static_assert(sizeof(CS_MONITOR_EX_HEADER) == 16, "CS_MONITOR_EX_HEADER must be 16 bytes");
 static_assert(sizeof(DCML) == 40, "DISPLAYCONTROL_MONITOR_LAYOUT must be 40 bytes");
+
+constexpr WORD kCsMonitor = 0xC005;
+constexpr WORD kCsMonitorEx = 0xC008;
+constexpr UINT32 kMonitorPrimary = 0x00000001;
+constexpr UINT32 kMonitorAttributeSize = sizeof(MONITOR_ATTRIBUTES);
 
 // DeviceScaleFactor must be 100, 140, or 180; snap the desktop scale to the nearest tier.
 DWORD DeviceScaleTierFor(unsigned int pct)
@@ -197,26 +235,73 @@ DWORD DeviceScaleTierFor(unsigned int pct)
     return 0;
 }
 
+UINT32 PhysicalMmFor(INT32 pixels, UINT32 desktopScaleFactor)
+{
+    const UINT32 dpi = 96u * desktopScaleFactor / 100u;
+    if (pixels <= 0 || dpi == 0)
+        return 10;
+    UINT32 mm = static_cast<UINT32>(static_cast<long long>(pixels) * 254 / (dpi * 10));
+    if (mm < 10) return 10;
+    if (mm > 10000) return 10000;
+    return mm;
+}
+
+rdpMonitor MakePrimaryMonitor(INT32 width, INT32 height, UINT32 desktopScaleFactor)
+{
+    if (width <= 0) width = 1920;
+    if (height <= 0) height = 1080;
+
+    rdpMonitor mon{};
+    mon.width = width;
+    mon.height = height;
+    mon.is_primary = 1;
+    mon.attributes.physicalWidth = PhysicalMmFor(width, desktopScaleFactor);
+    mon.attributes.physicalHeight = PhysicalMmFor(height, desktopScaleFactor);
+    mon.attributes.orientation = 0;
+    mon.attributes.desktopScaleFactor = desktopScaleFactor;
+    mon.attributes.deviceScaleFactor = DeviceScaleTierFor(desktopScaleFactor);
+    return mon;
+}
+
+void ApplyAttributesOverride(UINT32 count, MONITOR_ATTRIBUTES* attributes)
+{
+    if (!g_overrideEnabled || !attributes || count == 0 || count > 16)
+        return;
+
+    const UINT32 desktopScaleFactor = g_overridePct;
+    const UINT32 deviceScaleFactor = DeviceScaleTierFor(desktopScaleFactor);
+    for (UINT32 i = 0; i < count; ++i)
+    {
+        attributes[i].desktopScaleFactor = desktopScaleFactor;
+        attributes[i].deviceScaleFactor = deviceScaleFactor;
+    }
+}
+
+void WriteMonitorDef(const rdpMonitor& mon, TS_MONITOR_DEF* out)
+{
+    out->left = mon.x;
+    out->top = mon.y;
+    out->right = mon.x + mon.width - 1;
+    out->bottom = mon.y + mon.height - 1;
+    out->flags = mon.is_primary ? kMonitorPrimary : 0;
+}
+
+void WriteMonitorAttributes(const rdpMonitor& mon, MONITOR_ATTRIBUTES* out)
+{
+    *out = mon.attributes;
+}
+
 // Rewrite every monitor's scale to the configured % (clamped 100..500) before it ships.
 void ApplyOverride(unsigned int count, void* dcmlArray)
 {
     if (!g_overrideEnabled || !dcmlArray || count == 0 || count > 16)
         return;
 
-    auto overridePct = g_overridePct;
-    if (g_fakeLayout)
-    {
-        if (overridePct == 100)
-            overridePct = 200;
-        else
-            overridePct = 100;
-    }
-
-    DWORD device = DeviceScaleTierFor(overridePct);
+    DWORD device = DeviceScaleTierFor(g_overridePct);
     DCML* m = reinterpret_cast<DCML*>(dcmlArray);
     for (unsigned i = 0; i < count; ++i)
     {
-        m[i].DesktopScaleFactor = overridePct;
+        m[i].DesktopScaleFactor = g_overridePct;
         m[i].DeviceScaleFactor = device;
     }
 }
@@ -249,12 +334,6 @@ void LogLayoutArray(const wchar_t* tag, unsigned int count, void* monitors)
 // header). We rewrite the scale here (the override) just before the bytes are serialized.
 int Hooked_WriteLayout(void* thisptr, unsigned int count, void* monitors)
 {
-    // if override % is zero, block sending any calls
-    if (g_overridePct == 0)
-    {
-        Log(L"WRITE bailing out");
-        return 0;
-    }
     void* arr = monitors ? reinterpret_cast<BYTE*>(monitors) + 8 : nullptr;
     ApplyOverride(count, arr);
 #ifdef MSTSFENCE_DPI_DIAG
@@ -298,11 +377,6 @@ int Hooked_SendLayoutA(void* thisptr, unsigned int count, void* monitors)
 {
     LogLayoutArray(L"SEND-A", count, monitors);
     return Real_SendLayoutA(thisptr, count, monitors);
-}
-int Hooked_SendLayoutB(void* thisptr, unsigned int a, unsigned int b)
-{
-    Log(L"SEND-B SendMonitorLayoutPdu(this=%p, a=%u, b=%u)", thisptr, a, b);
-    return Real_SendLayoutB(thisptr, a, b);
 }
 int Hooked_Validate(unsigned int count, void* monitors, void* arg3)
 {
@@ -409,252 +483,141 @@ void RemoveApiProbes()
 #endif  // MSTSFENCE_DPI_DIAG
 
 // ---------------------------------------------------------------------------
-// the connect-time fix
+// connect-time monitor data override
 // ---------------------------------------------------------------------------
-// Replay the dance's SendMonitorLayoutPdu(channel, 0, 0) exactly once per connection, on the
-// channel's own (OnDataReceived) thread. SEH-guarded: a wrong this/state degrades to a logged
-// fault instead of crashing mstsc -- though on a GUID-matched build it does not fault.
-void TryForceSend(void* channel)
+// Single-monitor mstsc connections normally advertise only CS_CORE dimensions;
+// they skip CS_MONITOR/CS_MONITOR_EX, so no desktop scale reaches the host at
+// connect. When DpiOverride is on, synthesize the missing monitor blocks. When
+// mstsc already emitted them, rewrite the scale fields in the existing
+// TS_MONITOR_ATTRIBUTES array.
+int Hooked_GetMonData(void* self, void* csMonitorHdr, void* monitorDefArray,
+                      void* csMonitorLenOut, void* csMonitorExHdr,
+                      void* monitorAttributes, void* csMonitorExLenOut,
+                      void* monitorEx2Hdr, void* monitorEx2Data,
+                      void* monitorEx2LenOut)
 {
-    if (!g_fixEnabled || !channel || !Real_SendLayoutB)
-        return;
-    if (g_forcedSend)
-        return;  // already sent for this connection (re-armed by InitSelf on reconnect)
-    int r = 0;
-    Log(L"rdpedisp: TryForceSend (this=%p) -> %d", channel, r);
-    __try
-    {
-        #if 0 // this is temporarily (?) off - it does not seem to have the desired effect
-        g_fakeLayout = true;
-        r = Real_SendLayoutB(channel, 0, 0);
-        Log(L"rdpedisp: forced monitor-layout send at connect (this=%p, fake: %d) -> %d", channel, g_fakeLayout, r);
-        g_fakeLayout = false;
-        #endif
-        r = Real_SendLayoutB(channel, 0, 0);
-        Log(L"rdpedisp: forced monitor-layout send at connect (this=%p, fake: %d) -> %d", channel, g_fakeLayout, r);
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER)
-    {
-        Log(L"rdpedisp: forced send FAULTED 0x%08lX (this=%p) -- mstsc kept alive",
-            static_cast<unsigned long>(GetExceptionCode()), channel);
-        return;
-    }
-    InterlockedExchange(&g_forcedSend, 1);
-}
-
-int Hooked_OnDataReceived(void* thisptr, void* a2, void* a3)
-{
-    int r = Real_OnDataReceived(thisptr, a2, a3);
-    // The display-control interface sub-object that owns SendMonitorLayoutPdu sits +8 from
-    // the IWTSVirtualChannelCallback sub-object that OnDataReceived runs on (multiple
-    // inheritance; offset pinned to the known build).
-    Log(L"rdpedisp: OnDataReceived this=%p", thisptr);
-    TryForceSend(reinterpret_cast<BYTE*>(thisptr) + 8);
-    return r;
-}
-
-int Hooked_InitSelf(void* thisptr, void* a2, void* a3)
-{
-    int r = Real_InitSelf(thisptr, a2, a3);
-    g_displayChannel = thisptr;
-    InterlockedExchange(&g_forcedSend, 0);  // new connection -> allow the force again
-    Log(L"rdpedisp: InitSelf this=%p (re-armed)", thisptr);
-    return r;
-}
-
-// ---------------------------------------------------------------------------
-// the connect-time resolution nudge (the "dark channel" workaround)
-// ---------------------------------------------------------------------------
-// When you reconnect to an *already-logged-on* session, the host reuses the session's existing
-// display config and usually never (re)opens the display-control channel -- so OnDataReceived
-// never fires and the fix above has nothing to hook (host stuck at the wrong scale). The lever:
-// make the advertised resolution differ from the session's current one, so the host is forced to
-// reconfigure the display -- which (re)opens display control. Then the force-send above applies the
-// true scale. We shave g_nudgePx off the advertised primary-monitor height at connect; the force-send
-// reads a different source (RdpWinMonitorConfig), so it still sends the true 4K once the channel opens.
-//
-// There are two blocks carrying the size, depending on the connection:
-//   * CS_CORE (always sent) -- desktopHeight. Built by CoreFSM::OnInitiateConnection; this is the
-//     ONLY size a single-monitor connect advertises (CS_MONITOR is gated on UseMultimon). PRIMARY hook.
-//   * CS_MONITOR (multimon only) -- the per-monitor rectangles. Built by CNC::NC_GetMONITORData.
-//
-// CS_MONITOR path: by the time NC_GetMONITORData returns,
-//   arg2 (csMonHdr) = CS_MONITOR header { WORD type=0xC005, WORD len, DWORD flags, DWORD count }
-//   arg3 (defArray) = count x TS_MONITOR_DEF { LONG left, top, right, bottom; DWORD flags } (20B each)
-// Primary monitor has flags bit 0. Modifying a coordinate is length-safe (no header length changes).
-// On a single monitor UseMultimon=0 -> the block is never emitted (*arg2 stays 0) -> we no-op quietly.
-int Hooked_GetMonData(void* a1, void* csMonHdr, void* defArray, void* a4, void* a5,
-                      void* a6, void* a7, void* a8, void* a9, void* a10)
-{
-    int r = Real_GetMonData(a1, csMonHdr, defArray, a4, a5, a6, a7, a8, a9, a10);
+    int r = Real_GetMonData(self, csMonitorHdr, monitorDefArray, csMonitorLenOut,
+                            csMonitorExHdr, monitorAttributes, csMonitorExLenOut,
+                            monitorEx2Hdr, monitorEx2Data, monitorEx2LenOut);
 #ifdef MSTSFENCE_DPI_DIAG
-    // OBSERVE what the connect advertises. arg2 = CS_MONITOR header (0xC005); arg5 = CS_MONITOR_EX header
-    // (0xC008) { type,len,flags, monitorAttributeSize@8, count@0xC }; arg6 = the attributes array that
-    // follows it (TS_MONITOR_ATTRIBUTES, 20B: physW, physH, orientation, DesktopScaleFactor@0xC,
-    // DeviceScaleFactor@0x10). Tag 0x0000 => the block was NOT emitted (single monitor / UseMultimon off)
-    // => the client advertises NO scale at connect, so the host has only its default (100%) to fall back on.
     __try
     {
-        WORD csm = csMonHdr ? *reinterpret_cast<WORD*>(csMonHdr) : 0;
-        WORD cse = a5 ? *reinterpret_cast<WORD*>(a5) : 0;
+        const auto* csmHdr = static_cast<const CS_MONITOR_HEADER*>(csMonitorHdr);
+        const auto* cseHdr = static_cast<const CS_MONITOR_EX_HEADER*>(csMonitorExHdr);
+        WORD csm = csmHdr ? csmHdr->type : 0;
+        WORD cse = cseHdr ? cseHdr->type : 0;
         Log(L"GETMON: r=%d CS_MONITOR=0x%04X CS_MONITOR_EX=0x%04X%s", r, csm, cse,
-            (csm != 0xC005 && cse != 0xC008) ? L"  (nothing emitted -> no connect-time scale advertised)" : L"");
-        if (cse == 0xC008 && a6)
+            (csm != kCsMonitor && cse != kCsMonitorEx) ? L"  (nothing emitted -> no connect-time scale advertised)" : L"");
+        if (cse == kCsMonitorEx && monitorAttributes)
         {
-            DWORD exCount = *reinterpret_cast<DWORD*>(static_cast<BYTE*>(a5) + 0xC);
+            const DWORD exCount = cseHdr->monitorCount;
+            const auto* attrs = static_cast<const MONITOR_ATTRIBUTES*>(monitorAttributes);
             if (exCount >= 1 && exCount <= 16)
                 for (DWORD i = 0; i < exCount; ++i)
                 {
-                    BYTE* at = static_cast<BYTE*>(a6) + i * 20;
                     Log(L"GETMON:   MON_EX[%lu] physW=%lumm physH=%lumm orient=%lu DesktopScale=%lu%% DeviceScale=%lu%%",
-                        i, *reinterpret_cast<DWORD*>(at + 0), *reinterpret_cast<DWORD*>(at + 4),
-                        *reinterpret_cast<DWORD*>(at + 8), *reinterpret_cast<DWORD*>(at + 0xC),
-                        *reinterpret_cast<DWORD*>(at + 0x10));
+                        static_cast<unsigned long>(i),
+                        static_cast<unsigned long>(attrs[i].physicalWidth),
+                        static_cast<unsigned long>(attrs[i].physicalHeight),
+                        static_cast<unsigned long>(attrs[i].orientation),
+                        static_cast<unsigned long>(attrs[i].desktopScaleFactor),
+                        static_cast<unsigned long>(attrs[i].deviceScaleFactor));
                 }
         }
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { Log(L"GETMON: observe faulted"); }
 #endif
-    // EXPERIMENT: when the real builder skipped the monitor blocks (single monitor, *csMonHdr != 0xC005),
-    // synthesize a 1-monitor CS_MONITOR + CS_MONITOR_EX carrying DesktopScaleFactor=g_injectScale, to test
-    // whether the host honors a *connect-time* scale (which would fix fresh AND reconnect). Every write
-    // lands in PrepareGccUserData's own frame locals: csMonHdr=a2 header, defArray=a3, a5=CS_MONITOR_EX
-    // header, a6=TS_MONITOR_ATTRIBUTES, a4=CS_MONITOR length out, a7=CS_MONITOR_EX length out.
-    // a8/a9/a10 are for a separate 0xC00B monitor block, so leave them untouched.
-    if (g_injectScale > 0 && csMonHdr && defArray && a5 && a6 && a4 && a7)
-    {
-        __try
-        {
-            if (*reinterpret_cast<WORD*>(csMonHdr) != 0xC005)  // real builder emitted nothing -> ours
-            {
-                LONG  W = g_connectW > 0 ? g_connectW : 1920;
-                LONG  H = g_connectH > 0 ? g_connectH : 1080;
-                DWORD desk = g_injectScale, dev = DeviceScaleTierFor(g_injectScale);
-                DWORD dpi  = 96u * desk / 100u;                       // physical size, kept consistent with the scale
-                DWORD physW = dpi ? static_cast<DWORD>(static_cast<long long>(W) * 254 / (dpi * 10)) : 520;
-                DWORD physH = dpi ? static_cast<DWORD>(static_cast<long long>(H) * 254 / (dpi * 10)) : 290;
+    if (!g_overrideEnabled || r < 0 || !csMonitorHdr || !monitorDefArray ||
+        !csMonitorLenOut || !csMonitorExHdr || !monitorAttributes || !csMonitorExLenOut)
+        return r;
 
-                BYTE* m = static_cast<BYTE*>(csMonHdr);              // CS_MONITOR header (12B) + DEF
-                *reinterpret_cast<WORD*>(m)       = 0xC005;
-                *reinterpret_cast<WORD*>(m + 2)   = 12 + 20;          // TS_UD length
-                *reinterpret_cast<DWORD*>(m + 4)  = 0;                // flags
-                *reinterpret_cast<DWORD*>(m + 8)  = 1;                // monitorCount
-                BYTE* d = static_cast<BYTE*>(defArray);              // TS_MONITOR_DEF { l, t, inclusive-r, inclusive-b, flags }
-                *reinterpret_cast<LONG*>(d)       = 0;
-                *reinterpret_cast<LONG*>(d + 4)   = 0;
-                *reinterpret_cast<LONG*>(d + 8)   = W - 1;
-                *reinterpret_cast<LONG*>(d + 12)  = H - 1;
-                *reinterpret_cast<DWORD*>(d + 16) = 1;                // TS_MONITOR_PRIMARY
+    auto* csmHdr = static_cast<CS_MONITOR_HEADER*>(csMonitorHdr);
+    auto* defs = static_cast<TS_MONITOR_DEF*>(monitorDefArray);
+    auto* cseHdr = static_cast<CS_MONITOR_EX_HEADER*>(csMonitorExHdr);
+    auto* attrs = static_cast<MONITOR_ATTRIBUTES*>(monitorAttributes);
+    auto* csmLen = static_cast<DWORD*>(csMonitorLenOut);
+    auto* cseLen = static_cast<DWORD*>(csMonitorExLenOut);
 
-                BYTE* e = static_cast<BYTE*>(a5);                    // CS_MONITOR_EX header (16B)
-                *reinterpret_cast<WORD*>(e)       = 0xC008;
-                *reinterpret_cast<WORD*>(e + 2)   = 16 + 20;          // TS_UD length
-                *reinterpret_cast<DWORD*>(e + 4)  = 0;                // flags
-                *reinterpret_cast<DWORD*>(e + 8)  = 20;               // monitorAttributeSize
-                *reinterpret_cast<DWORD*>(e + 0xC) = 1;              // monitorCount
-                BYTE* at = static_cast<BYTE*>(a6);                  // TS_MONITOR_ATTRIBUTES
-                *reinterpret_cast<DWORD*>(at)       = physW;
-                *reinterpret_cast<DWORD*>(at + 4)   = physH;
-                *reinterpret_cast<DWORD*>(at + 8)   = 0;             // orientation (landscape)
-                *reinterpret_cast<DWORD*>(at + 0xC) = desk;          // DesktopScaleFactor
-                *reinterpret_cast<DWORD*>(at + 0x10) = dev;          // DeviceScaleFactor
-
-                *reinterpret_cast<DWORD*>(a4) = 12 + 20;              // CS_MONITOR length out-param
-                *reinterpret_cast<DWORD*>(a7) = 16 + 20;              // CS_MONITOR_EX length out-param
-                Log(L"rdpedisp: INJECTED CS_MONITOR+EX (1 mon %ldx%ld phys=%lux%lumm DesktopScale=%lu%% DeviceScale=%lu%%) at connect",
-                    W, H, physW, physH, desk, dev);
-            }
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER)
-        {
-            Log(L"rdpedisp: inject FAULTED 0x%08lX -- connect left as-is", static_cast<unsigned long>(GetExceptionCode()));
-        }
-    }
-    if (g_nudgePx == 0 || r < 0 || !csMonHdr || !defArray)
-        return r;  // nudge off, or the builder failed -> leave the connect untouched
     __try
     {
-        if (*reinterpret_cast<WORD*>(csMonHdr) != 0xC005)
-            return r;  // CS_MONITOR not emitted (single monitor / UseMultimon=0) -- CS_CORE nudge covers it
-        DWORD count = *reinterpret_cast<DWORD*>(static_cast<BYTE*>(csMonHdr) + 8);
-        if (count < 1 || count > 16)
+        if (csmHdr->type == kCsMonitor)
         {
-            Log(L"rdpedisp: nudge skipped -- implausible monitor count=%lu", count);
-            return r;
-        }
-        for (DWORD i = 0; i < count; ++i)
-        {
-            BYTE* e = static_cast<BYTE*>(defArray) + i * 20;  // TS_MONITOR_DEF stride
-            if (*reinterpret_cast<DWORD*>(e + 16) & 1u)       // primary (flags bit 0)
+            const UINT32 count = csmHdr->monitorCount;
+            if (count < 1 || count > 16)
             {
-                LONG  top    = *reinterpret_cast<LONG*>(e + 4);
-                LONG* bottom = reinterpret_cast<LONG*>(e + 12);
-                if (*bottom - top > static_cast<LONG>(g_nudgePx) + 64)  // keep a sane minimum height
-                {
-                    LONG before = *bottom;
-                    *bottom -= static_cast<LONG>(g_nudgePx);
-                    Log(L"rdpedisp: nudged connect-time CS_MONITOR primary height -%u px (bottom %ld->%ld) "
-                        L"-- forcing host display reconfigure to (re)open display control",
-                        g_nudgePx, static_cast<long>(before), static_cast<long>(*bottom));
-                }
+                Log(L"rdpedisp: connect override skipped -- implausible monitor count=%lu",
+                    static_cast<unsigned long>(count));
                 return r;
             }
+
+            if (cseHdr->type != kCsMonitorEx)
+            {
+                for (UINT32 i = 0; i < count; ++i)
+                {
+                    const INT32 width = defs[i].right - defs[i].left + 1;
+                    const INT32 height = defs[i].bottom - defs[i].top + 1;
+                    attrs[i].physicalWidth = PhysicalMmFor(width, g_overridePct);
+                    attrs[i].physicalHeight = PhysicalMmFor(height, g_overridePct);
+                    attrs[i].orientation = 0;
+                }
+            }
+            ApplyAttributesOverride(count, attrs);
+
+            cseHdr->type = kCsMonitorEx;
+            cseHdr->length = static_cast<WORD>(sizeof(CS_MONITOR_EX_HEADER) + count * sizeof(MONITOR_ATTRIBUTES));
+            cseHdr->flags = 0;
+            cseHdr->monitorAttributeSize = kMonitorAttributeSize;
+            cseHdr->monitorCount = count;
+            *cseLen = cseHdr->length;
+
+            Log(L"rdpedisp: spoofed connect-time CS_MONITOR_EX scale to %u%% for %lu monitor(s)",
+                g_overridePct, static_cast<unsigned long>(count));
+            return r;
         }
-        Log(L"rdpedisp: nudge skipped -- no primary monitor flagged among %lu", count);
+
+        const rdpMonitor mon = MakePrimaryMonitor(g_connectW, g_connectH, g_overridePct);
+        csmHdr->type = kCsMonitor;
+        csmHdr->length = static_cast<WORD>(sizeof(CS_MONITOR_HEADER) + sizeof(TS_MONITOR_DEF));
+        csmHdr->flags = 0;
+        csmHdr->monitorCount = 1;
+        WriteMonitorDef(mon, defs);
+
+        cseHdr->type = kCsMonitorEx;
+        cseHdr->length = static_cast<WORD>(sizeof(CS_MONITOR_EX_HEADER) + sizeof(MONITOR_ATTRIBUTES));
+        cseHdr->flags = 0;
+        cseHdr->monitorAttributeSize = kMonitorAttributeSize;
+        cseHdr->monitorCount = 1;
+        WriteMonitorAttributes(mon, attrs);
+
+        *csmLen = csmHdr->length;
+        *cseLen = cseHdr->length;
+        Log(L"rdpedisp: injected CS_MONITOR+EX (1 mon %ldx%ld phys=%lux%lumm DesktopScale=%lu%% DeviceScale=%lu%%) at connect",
+            static_cast<long>(mon.width), static_cast<long>(mon.height),
+            static_cast<unsigned long>(mon.attributes.physicalWidth),
+            static_cast<unsigned long>(mon.attributes.physicalHeight),
+            static_cast<unsigned long>(mon.attributes.desktopScaleFactor),
+            static_cast<unsigned long>(mon.attributes.deviceScaleFactor));
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
     {
-        Log(L"rdpedisp: CS_MONITOR-nudge FAULTED 0x%08lX -- connect untouched",
+        Log(L"rdpedisp: connect-time scale spoof FAULTED 0x%08lX -- connect left as-is",
             static_cast<unsigned long>(GetExceptionCode()));
     }
     return r;
 }
 
-// CoreFSM::OnInitiateConnection(this, params, ...) copies desktopHeight from *(WORD*)(params+0x206)
-// into the CS_CORE block. This is the size a single-monitor connect advertises. We transiently shave
-// g_nudgePx off params+0x206 across the real call (so the whole CS_CORE build sees the smaller height),
-// then restore it immediately -- connect-isolated, and the force-send later sends the true height.
+// CoreFSM::OnInitiateConnection(this, params, ...) builds CS_CORE from
+// *(WORD*)(params+0x204/0x206). Capture those dimensions so the single-monitor
+// CS_MONITOR spoof matches the CS_CORE size mstsc is already advertising.
 int Hooked_OnInit(void* a1, void* params, void* a3, void* a4)
 {
-    if (params)  // capture the true CS_CORE desktop dims (used by the inject to build a consistent rect)
+    if (params)  // capture the true CS_CORE desktop dims (used by the spoof to build a consistent rect)
         __try {
             g_connectW = *reinterpret_cast<WORD*>(static_cast<BYTE*>(params) + 0x204);
             g_connectH = *reinterpret_cast<WORD*>(static_cast<BYTE*>(params) + 0x206);
         } __except (EXCEPTION_EXECUTE_HANDLER) {}
 
-    WORD* ph = nullptr;
-    WORD  saved = 0;
-    bool  patched = false;
-    if (g_nudgePx > 0 && g_fixEnabled && params)
-    {
-        __try
-        {
-            ph = reinterpret_cast<WORD*>(static_cast<BYTE*>(params) + 0x206);  // CS_CORE desktopHeight source
-            WORD cur = *ph;
-            if (cur > g_nudgePx + 64)  // sane floor -- never shrink toward a tiny/zero height
-            {
-                saved = cur;
-                *ph = static_cast<WORD>(cur - g_nudgePx);
-                patched = true;
-            }
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER) { patched = false; ph = nullptr; }
-    }
-
-    int r = Real_OnInit(a1, params, a3, a4);  // builds CS_CORE from the (shaved) height
-
-    if (patched)
-    {
-        __try
-        {
-            *ph = saved;  // restore at once -- only the GCC blob keeps the shaved height
-            Log(L"rdpedisp: nudged connect-time CS_CORE desktopHeight -%u px (%u->%u) "
-                L"-- forcing host display reconfigure to (re)open display control",
-                g_nudgePx, static_cast<unsigned>(saved), static_cast<unsigned>(saved - g_nudgePx));
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER) {}
-    }
-    return r;
+    return Real_OnInit(a1, params, a3, a4);
 }
 
 bool InstallChannelHooks()
@@ -675,16 +638,13 @@ bool InstallChannelHooks()
     if (!kb)
     {
         Log(L"rdpedisp: unrecognized mstscax build "
-            L"guid={%08lX-%04hX-%04hX-%02X%02X-%02X%02X%02X%02X%02X%02X} -- DPI fix/override not applied; send me this line",
+            L"guid={%08lX-%04hX-%04hX-%02X%02X-%02X%02X%02X%02X%02X%02X} -- DPI override not applied; send me this line",
             g.Data1, g.Data2, g.Data3, g.Data4[0], g.Data4[1], g.Data4[2], g.Data4[3],
             g.Data4[4], g.Data4[5], g.Data4[6], g.Data4[7]);
         return true;  // safe no-op
     }
 
     BYTE* base = reinterpret_cast<BYTE*>(mod);
-    Real_SendLayoutB    = reinterpret_cast<SendLayoutWH_t>(base + kb->sendB);   // address to call (not detoured)
-    Real_OnDataReceived = reinterpret_cast<ChannelFn3_t>(base + kb->onData);
-    Real_InitSelf       = reinterpret_cast<ChannelFn3_t>(base + kb->initSelf);
 
     // The serializer is only hooked when the override is on (or in a diag build to observe).
 #ifdef MSTSFENCE_DPI_DIAG
@@ -695,33 +655,24 @@ bool InstallChannelHooks()
 
     DetourTransactionBegin();
     DetourUpdateThread(GetCurrentThread());
-    DetourAttach(&reinterpret_cast<PVOID&>(Real_OnDataReceived), Hooked_OnDataReceived);
-    DetourAttach(&reinterpret_cast<PVOID&>(Real_InitSelf), Hooked_InitSelf);
     if (wantWrite)
     {
         Real_WriteLayout = reinterpret_cast<SendLayoutArr_t>(base + kb->write);
         DetourAttach(&reinterpret_cast<PVOID&>(Real_WriteLayout), Hooked_WriteLayout);
     }
-    // The connect-time nudge only *modifies* when DpiNudge>0 AND DpiFix is on (the nudge needs the
-    // force-send to restore the resolution). In a diag build we install the hooks unconditionally so
-    // they can OBSERVE the connect-time CS_MONITOR / CS_MONITOR_EX blocks (zero adjustment when off).
-    // OnInitiateConnection (CS_CORE) is the primary nudge; NC_GetMONITORData (CS_MONITOR/EX) is multimon.
+    // In a diag build, install the connect-time hooks unconditionally so they can observe
+    // CS_MONITOR / CS_MONITOR_EX even when the override is off.
 #ifdef MSTSFENCE_DPI_DIAG
-    const bool armNudgeHooks = true;   // always hook to observe; modifications fire only per their own flags
+    const bool wantConnect = true;
 #else
-    const bool armNudgeHooks = (g_nudgePx > 0 && g_fixEnabled) || g_injectScale > 0;
+    const bool wantConnect = g_overrideEnabled;
 #endif
-    if (armNudgeHooks)
+    if (wantConnect)
     {
         Real_OnInit = reinterpret_cast<OnInitConn_t>(base + kb->onInit);
         DetourAttach(&reinterpret_cast<PVOID&>(Real_OnInit), Hooked_OnInit);
         Real_GetMonData = reinterpret_cast<GetMonData_t>(base + kb->getMonData);
         DetourAttach(&reinterpret_cast<PVOID&>(Real_GetMonData), Hooked_GetMonData);
-    }
-    else if (g_nudgePx > 0)
-    {
-        Log(L"rdpedisp: DpiNudge=%u ignored -- needs DpiFix on (no force-send to restore the resolution)",
-            g_nudgePx);
     }
 #ifdef MSTSFENCE_DPI_DIAG
     Real_SendLayoutA  = reinterpret_cast<SendLayoutArr_t>(base + kb->sendA);
@@ -732,12 +683,10 @@ bool InstallChannelHooks()
     DetourAttach(&reinterpret_cast<PVOID&>(Real_Validate), Hooked_Validate);
     DetourAttach(&reinterpret_cast<PVOID&>(Real_GfxSetLayout), Hooked_GfxSetLayout);
     DetourAttach(&reinterpret_cast<PVOID&>(Real_MatchesLocal), Hooked_MatchesLocal);
-    DetourAttach(&reinterpret_cast<PVOID&>(Real_SendLayoutB), Hooked_SendLayoutB);  // observe SendB (-> trampoline)
 #endif
     LONG err = DetourTransactionCommit();
-    Log(L"rdpedisp: channel hooks installed (build matched); commit=%ld fix=%d override=%d(%u%%) nudge=%upx inject=%u%%%s",
-        err, g_fixEnabled, g_overrideEnabled, g_overridePct, g_nudgePx, g_injectScale,
-        ((g_nudgePx || g_injectScale) && Real_OnInit) ? L" (armed)" : L"");
+    Log(L"rdpedisp: channel hooks installed (build matched); commit=%ld override=%d(%u%%)%s",
+        err, g_overrideEnabled, g_overridePct, Real_OnInit ? L" (connect armed)" : L"");
     return true;
 }
 
@@ -747,8 +696,6 @@ void RemoveChannelHooks()
         return;
     DetourTransactionBegin();
     DetourUpdateThread(GetCurrentThread());
-    if (Real_OnDataReceived) DetourDetach(&reinterpret_cast<PVOID&>(Real_OnDataReceived), Hooked_OnDataReceived);
-    if (Real_InitSelf)       DetourDetach(&reinterpret_cast<PVOID&>(Real_InitSelf), Hooked_InitSelf);
     if (Real_WriteLayout)    DetourDetach(&reinterpret_cast<PVOID&>(Real_WriteLayout), Hooked_WriteLayout);
     if (Real_GetMonData)     DetourDetach(&reinterpret_cast<PVOID&>(Real_GetMonData), Hooked_GetMonData);
     if (Real_OnInit)         DetourDetach(&reinterpret_cast<PVOID&>(Real_OnInit), Hooked_OnInit);
@@ -757,7 +704,6 @@ void RemoveChannelHooks()
     if (Real_Validate)     DetourDetach(&reinterpret_cast<PVOID&>(Real_Validate), Hooked_Validate);
     if (Real_GfxSetLayout) DetourDetach(&reinterpret_cast<PVOID&>(Real_GfxSetLayout), Hooked_GfxSetLayout);
     if (Real_MatchesLocal) DetourDetach(&reinterpret_cast<PVOID&>(Real_MatchesLocal), Hooked_MatchesLocal);
-    DetourDetach(&reinterpret_cast<PVOID&>(Real_SendLayoutB), Hooked_SendLayoutB);
 #endif
     DetourTransactionCommit();
 }
@@ -783,18 +729,15 @@ LONG g_loadHook = 0;
 void mstsfence::rdpedisp::OnAttach()
 {
     g_trace = GetEnvironmentVariableW(L"MSTSFENCE_TRACE", nullptr, 0) > 0;
-    g_fixEnabled = mstsfence::DpiFixEnabled();
     g_overrideEnabled = mstsfence::DpiOverrideEnabled();
     g_overridePct = mstsfence::DpiOverridePct();
-    g_nudgePx = mstsfence::DpiNudgePx();
-    g_injectScale = mstsfence::DpiInjectScale();
 
 #ifdef MSTSFENCE_DPI_DIAG
     InstallApiProbes();   // observe-only DPI reads; always hook mstscax too (we want the data)
 #else
-    if (!g_fixEnabled && !g_overrideEnabled && g_nudgePx == 0 && g_injectScale == 0)
+    if (!g_overrideEnabled)
     {
-        Log(L"rdpedisp: idle (DpiFix + DpiOverride + DpiNudge + DpiInjectScale all off).");
+        Log(L"rdpedisp: idle (DpiOverride off).");
         return;  // nothing to hook
     }
 #endif

@@ -50,42 +50,19 @@ namespace mstsfence
 {
     bool FenceEnabled()    { return ReadFlag(L"Fence", true); }
     bool DarkModeEnabled() { return ReadFlag(L"DarkMode", true); }
-    bool DpiFixEnabled()   { return ReadFlag(L"DpiFix", false); }  // hidden feature -> default off
     bool DpiOverrideEnabled() { return ReadFlag(L"DpiOverride", false); }
     unsigned DpiOverridePct()
     {
         DWORD v = ReadDword(L"DpiOverridePct", 100);
-        return v < 100 ? 0u : (v > 500 ? 500u : static_cast<unsigned>(v));
-    }
-    unsigned DpiNudgePx()
-    {
-        DWORD v = ReadDword(L"DpiNudge", 0);   // 0 = off; cap at 64 px so a fat-fingered value can't break the connect
-        return v > 64 ? 64u : static_cast<unsigned>(v);
-    }
-    unsigned DpiInjectScale()
-    {
-        DWORD v = ReadDword(L"DpiInjectScale", 0);   // 0 = off; else a DesktopScaleFactor clamped 100..500
-        if (v == 0) return 0u;
         return v < 100 ? 100u : (v > 500 ? 500u : static_cast<unsigned>(v));
     }
 
     void SetFenceEnabled(bool on)    { WriteFlag(L"Fence", on); }
     void SetDarkModeEnabled(bool on) { WriteFlag(L"DarkMode", on); }
-    void SetDpiFixEnabled(bool on)   { WriteFlag(L"DpiFix", on); }
     void SetDpiOverrideEnabled(bool on) { WriteFlag(L"DpiOverride", on); }
     void SetDpiOverridePct(unsigned pct)
     {
         if (pct < 100) pct = 100; else if (pct > 500) pct = 500;
         WriteDword(L"DpiOverridePct", pct);
-    }
-    void SetDpiNudgePx(unsigned px)
-    {
-        if (px > 64) px = 64;
-        WriteDword(L"DpiNudge", px);
-    }
-    void SetDpiInjectScale(unsigned scale)
-    {
-        if (scale != 0 && scale < 100) scale = 100; else if (scale > 500) scale = 500;
-        WriteDword(L"DpiInjectScale", scale);
     }
 }

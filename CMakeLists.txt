@@ -19,7 +19,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Compile the rdpedisp DPI-investigation scaffolding (observe hooks + DPI API probes) into
-# the hook DLL. OFF by default -- the connect-time DPI fix itself is always built; this just
+# the hook DLL. OFF by default -- the DPI override itself is always built; this just
 # adds the verbose logging that found it. Enable with -DMSTSFENCE_DPI_DIAG=ON.
 option(MSTSFENCE_DPI_DIAG "Build the rdpedisp DPI diagnostics scaffolding" OFF)
 

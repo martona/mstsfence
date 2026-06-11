@@ -16,7 +16,6 @@
 #define IDD_SETTINGS         210
 #define IDC_SET_FENCE        211
 #define IDC_SET_DARK         212
-#define IDC_SET_DPIFIX       213   // hidden unless Shift held at open
-#define IDC_SET_DPIOVER      214
-#define IDC_SET_DPIPCT       215
-#define IDC_SET_DPIPCT_LBL   216
+#define IDC_SET_DPIOVER      213
+#define IDC_SET_DPIPCT       214
+#define IDC_SET_DPIPCT_LBL   215
