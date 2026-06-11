@@ -30,7 +30,7 @@ option(MSTSFENCE_DPI_DIAG "Build the rdpedisp DPI diagnostics scaffolding" OFF)
 # plain `cmake ...` invocation still configures without a version flag.
 # ---------------------------------------------------------------------------
 if (NOT DEFINED MSTSFENCE_VERSION OR MSTSFENCE_VERSION STREQUAL "")
-    set(MSTSFENCE_VERSION "0.1.1.2")
+    set(MSTSFENCE_VERSION "0.1.2.4")
 endif()
 
 string(REPLACE "." ";" _mstsfence_version_parts "${MSTSFENCE_VERSION}")
