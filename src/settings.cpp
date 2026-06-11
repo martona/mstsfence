@@ -57,6 +57,11 @@ namespace mstsfence
         DWORD v = ReadDword(L"DpiOverridePct", 100);
         return v < 100 ? 0u : (v > 500 ? 500u : static_cast<unsigned>(v));
     }
+    unsigned DpiNudgePx()
+    {
+        DWORD v = ReadDword(L"DpiNudge", 0);   // 0 = off; cap at 64 px so a fat-fingered value can't break the connect
+        return v > 64 ? 64u : static_cast<unsigned>(v);
+    }
 
     void SetFenceEnabled(bool on)    { WriteFlag(L"Fence", on); }
     void SetDarkModeEnabled(bool on) { WriteFlag(L"DarkMode", on); }
@@ -66,5 +71,10 @@ namespace mstsfence
     {
         if (pct < 100) pct = 100; else if (pct > 500) pct = 500;
         WriteDword(L"DpiOverridePct", pct);
+    }
+    void SetDpiNudgePx(unsigned px)
+    {
+        if (px > 64) px = 64;
+        WriteDword(L"DpiNudge", px);
     }
 }

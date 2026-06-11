@@ -49,6 +49,8 @@ ipch/
 
 # claude
 .claude/
+handoff.md
 
 #various
 .tmp/
+

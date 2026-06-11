@@ -10,10 +10,13 @@ namespace mstsfence
     bool DpiFixEnabled();       // send the client's DPI to the host at connect (default OFF; hidden)
     bool DpiOverrideEnabled();  // force the host scale to a chosen % instead of matching the client
     unsigned DpiOverridePct();  // the override %, clamped to 100..500 (default 100)
+    unsigned DpiNudgePx();      // shave N px off the advertised primary height at connect so the host
+                                // (re)opens display control on reconnect (0 = off; default 0; needs DpiFix)
 
     void SetFenceEnabled(bool on);
     void SetDarkModeEnabled(bool on);
     void SetDpiFixEnabled(bool on);
     void SetDpiOverrideEnabled(bool on);
     void SetDpiOverridePct(unsigned pct);
+    void SetDpiNudgePx(unsigned px);
 }
