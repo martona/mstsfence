@@ -539,7 +539,7 @@ int Hooked_GetMonData(void* self, void* csMonitorHdr, void* monitorDefArray,
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { Log(L"GETMON: observe faulted"); }
 #endif
-    if (!g_overrideEnabled || r < 0 || !csMonitorHdr || !monitorDefArray ||
+    if (!g_overrideEnabled || !csMonitorHdr || !monitorDefArray ||
         !csMonitorLenOut || !csMonitorExHdr || !monitorAttributes || !csMonitorExLenOut)
         return r;
 
