@@ -156,3 +156,5 @@ Known limitations / later work:
 - **Injection resilience:** won't apply if `mstsc` ever runs with
   `ProcessExtensionPointDisablePolicy` (blocks window-hook injection) or CIG
   ("Microsoft-signed only"). Neither is on by default.
+
+This is a personal, non-commercial project. Copyright (C) 2026 [Marton Anka](https://anka.me)
